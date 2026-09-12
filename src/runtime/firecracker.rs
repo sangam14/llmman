@@ -210,15 +210,26 @@ impl FirecrackerVm {
         self.put("/vsock", &body)
     }
 
-    pub fn set_rootfs(&self, drive_path: &Path, is_root: bool) -> Result<()> {
+    /// Attaches a virtio-blk drive device (e.g. rootfs or secondary model drive).
+    pub fn add_drive(
+        &self,
+        drive_id: &str,
+        path_on_host: &Path,
+        is_read_only: bool,
+        is_root: bool,
+    ) -> Result<()> {
         let body = serde_json::json!({
-            "drive_id": "rootfs",
-            "path_on_host": drive_path.display().to_string(),
+            "drive_id": drive_id,
+            "path_on_host": path_on_host.display().to_string(),
             "is_root_device": is_root,
-            "is_read_only": false,
+            "is_read_only": is_read_only,
         })
         .to_string();
-        self.put("/drives/rootfs", &body)
+        self.put(&format!("/drives/{drive_id}"), &body)
+    }
+
+    pub fn set_rootfs(&self, drive_path: &Path, is_root: bool) -> Result<()> {
+        self.add_drive("rootfs", drive_path, false, is_root)
     }
 
     pub fn add_network_interface(
@@ -234,6 +245,27 @@ impl FirecrackerVm {
         })
         .to_string();
         self.put(&format!("/network-interfaces/{}", iface_id), &body)
+    }
+
+    /// Configures the initial virtio-balloon device prior to VM boot.
+    pub fn set_balloon(&self, amount_mib: u64, deflate_on_oom: bool) -> Result<()> {
+        let body = serde_json::json!({
+            "amount_mib": amount_mib,
+            "deflate_on_oom": deflate_on_oom,
+            "stats_polling_interval_s": 1,
+        })
+        .to_string();
+        self.put("/balloon", &body)
+    }
+
+    /// Dynamically inflates or deflates the memory balloon of a running VM.
+    /// Inflating returns memory to host; deflating gives memory back to guest.
+    pub fn adjust_balloon(&self, amount_mib: u64) -> Result<()> {
+        let body = serde_json::json!({
+            "amount_mib": amount_mib,
+        })
+        .to_string();
+        self.patch("/balloon", &body)
     }
 
     pub fn start(&self) -> Result<()> {
@@ -280,6 +312,13 @@ pub fn run_internal_daemon(socket_path: &Path) -> Result<()> {
                 if let Ok(n) = s.read(&mut buf) {
                     if n > 0 {
                         let req = String::from_utf8_lossy(&buf[..n]);
+                        if req.contains("/shutdown") {
+                            let resp =
+                                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+                            let _ = s.write_all(resp.as_bytes());
+                            let _ = s.shutdown(std::net::Shutdown::Both);
+                            break;
+                        }
                         let resp = if req.starts_with("GET /vm") {
                             "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{\"state\": \"Running\"}"
                         } else {
@@ -294,4 +333,45 @@ pub fn run_internal_daemon(socket_path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_internal_daemon_and_add_drive() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("test-fc.sock");
+
+        let handle = std::thread::spawn({
+            let sock = socket_path.clone();
+            move || {
+                let _ = run_internal_daemon(&sock);
+            }
+        });
+
+        // Wait for socket to bind
+        for _ in 0..20 {
+            if socket_path.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let vm = FirecrackerVm::connect(&socket_path);
+        assert!(vm.is_healthy());
+
+        let drive_path = temp_dir.path().join("model.gguf");
+        std::fs::write(&drive_path, b"test").unwrap();
+
+        assert!(vm.add_drive("model", &drive_path, true, false).is_ok());
+        assert!(vm.set_rootfs(&drive_path, true).is_ok());
+
+        assert!(vm.set_balloon(1024, true).is_ok());
+        assert!(vm.adjust_balloon(2048).is_ok());
+
+        let _ = vm.put("/shutdown", "{}");
+        let _ = handle.join();
+    }
 }

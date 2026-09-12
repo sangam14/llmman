@@ -24,6 +24,33 @@ pub fn create_ext4_rootfs(source_dir: &Path, output_blk: &Path, size_mb: u64) ->
         output_blk.display()
     );
 
+    // Fast path: if source_dir is an existing rootfs image file or contains rootfs.ext4,
+    // clone it instantly via copy-on-write reflink (<1ms, 0 extra disk space).
+    let candidate_img = if source_dir.is_file() {
+        Some(source_dir.to_path_buf())
+    } else {
+        let in_dir = source_dir.join("rootfs.ext4");
+        if in_dir.is_file() {
+            Some(in_dir)
+        } else {
+            None
+        }
+    };
+
+    if let Some(src_img) = candidate_img {
+        println!(
+            "[rootfs] Fast-cloning base rootfs via CoW reflink from {}",
+            src_img.display()
+        );
+        if let Ok(reflinked) = crate::runtime::reflink::reflink_or_copy(&src_img, output_blk) {
+            println!(
+                "[rootfs] Successfully provisioned rootfs via {}",
+                if reflinked { "reflink CoW" } else { "copy" }
+            );
+            return Ok(());
+        }
+    }
+
     // 1. Create block device file
     if let Some(parent) = output_blk.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -71,4 +98,22 @@ pub fn create_ext4_rootfs(source_dir: &Path, output_blk: &Path, size_mb: u64) ->
 
     println!("[rootfs] Successfully created rootfs.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_ext4_rootfs_reflink_fast_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let src_img = temp_dir.path().join("template.ext4");
+        let dst_img = temp_dir.path().join("target.ext4");
+
+        std::fs::write(&src_img, b"fake-ext4-image-bytes").unwrap();
+
+        assert!(create_ext4_rootfs(&src_img, &dst_img, 10).is_ok());
+        assert!(dst_img.exists());
+        assert_eq!(std::fs::read(&dst_img).unwrap(), b"fake-ext4-image-bytes");
+    }
 }

@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::runtime::{cni, kernel, lifecycle, pool, process};
@@ -46,61 +45,17 @@ pub enum MicrovmCommand {
         #[arg(value_name = "VM_ID")]
         vm_id: String,
     },
+    /// Reclaim orphaned MicroVM resources, stale records, leaked tap devices, and dead sockets
+    Gc {
+        /// Suppress non-essential output
+        #[arg(short, long)]
+        quiet: bool,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MicrovmRecord {
-    pub id: String,
-    pub pid: u32,
-    pub status: String,
-    pub kernel: String,
-    pub vcpus: u32,
-    pub memory_mb: u64,
-    pub ip: String,
-    pub tap: String,
-    pub model: String,
-    pub started_at: String,
-    pub socket_path: String,
-}
-
-fn vms_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("llmman")
-        .join("vms")
-}
-
-fn save_vm_record(record: &MicrovmRecord) -> Result<()> {
-    let dir = vms_dir();
-    std::fs::create_dir_all(&dir).ok();
-    let file_path = dir.join(format!("{}.json", record.id));
-    let json = serde_json::to_string_pretty(record)?;
-    std::fs::write(file_path, json)?;
-    Ok(())
-}
-
-fn load_active_vms() -> Vec<MicrovmRecord> {
-    let dir = vms_dir();
-    let mut records = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if let Ok(record) = serde_json::from_str::<MicrovmRecord>(&content) {
-                        if process::is_alive(record.pid) {
-                            records.push(record);
-                        } else {
-                            // Clean up dead process record
-                            let _ = std::fs::remove_file(entry.path());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    records.sort_by(|a, b| a.id.cmp(&b.id));
-    records
-}
+pub use crate::runtime::lifecycle::{
+    load_active_vms, remove_vm_record, save_vm_record, vms_dir, MicrovmRecord,
+};
 
 pub async fn run(args: &MicrovmArgs) -> Result<()> {
     match &args.command {
@@ -124,6 +79,10 @@ pub async fn run(args: &MicrovmArgs) -> Result<()> {
             stop_microvm(vm_id);
             Ok(())
         }
+        Some(MicrovmCommand::Gc { quiet }) => {
+            run_gc(*quiet)?;
+            Ok(())
+        }
     }
 }
 
@@ -143,6 +102,7 @@ async fn boot_microvm(
         memory_mb,
         rootfs_size_mb,
         kernel_path: Some(kernel_hint.to_path_buf()),
+        model_name: model.to_string(),
         ..lifecycle::VmConfig::default()
     };
 
@@ -155,22 +115,6 @@ async fn boot_microvm(
     let from_pool = booted.from_pool;
     let guest_ip = "172.16.0.2";
     let guest_mac = &config.guest_mac;
-
-    // Record the VM
-    let record = MicrovmRecord {
-        id: vm_id.clone(),
-        pid,
-        status: "RUNNING".to_string(),
-        kernel: kernel::KERNEL_VERSION.to_string(),
-        vcpus,
-        memory_mb,
-        ip: guest_ip.to_string(),
-        tap: tap_name.clone(),
-        model: model.to_string(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-        socket_path: active_socket.display().to_string(),
-    };
-    save_vm_record(&record)?;
 
     // Print boot output
     println!(
@@ -268,6 +212,7 @@ async fn boot_microvm(
 }
 
 fn list_microvms() {
+    let _ = crate::runtime::gc::sweep_orphaned_resources();
     let vms = load_active_vms();
 
     println!(
@@ -343,6 +288,7 @@ async fn show_vm_pool() {
 }
 
 fn stop_microvm(vm_id: &str) {
+    crate::runtime::proxy::stop_vm_bridge(vm_id);
     let dir = vms_dir();
     let file_path = dir.join(format!("{}.json", vm_id));
     if file_path.exists() {
@@ -366,5 +312,46 @@ fn stop_microvm(vm_id: &str) {
         let _ = std::fs::remove_file(file_path);
     } else {
         println!("[llmman] MicroVM {} not found or already stopped.", vm_id);
+    }
+}
+
+fn run_gc(quiet: bool) -> Result<()> {
+    if !quiet {
+        println!("\x1b[1;36m[llmman]\x1b[0m Sweeping orphaned MicroVM resources, stale records, leaked tap devices, and sockets...");
+    }
+    let report = crate::runtime::gc::sweep_orphaned_resources()?;
+    if !quiet {
+        println!("\x1b[1;32m✔ MicroVM Garbage Collection Complete!\x1b[0m");
+        println!("  Purged Stale Records: {}", report.purged_records);
+        println!("  Pruned TAP Devices:   {}", report.cleaned_taps);
+        println!("  Removed Sockets:      {}", report.removed_sockets);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    struct CliWrapper {
+        #[command(subcommand)]
+        cmd: Option<MicrovmCommand>,
+    }
+
+    #[test]
+    fn test_microvm_gc_subcommand_parse() {
+        let args = CliWrapper::try_parse_from(["microvm", "gc", "--quiet"]).unwrap();
+        match args.cmd {
+            Some(MicrovmCommand::Gc { quiet }) => assert!(quiet),
+            _ => panic!("Expected Gc command with quiet=true"),
+        }
+    }
+
+    #[test]
+    fn test_run_gc_executes_cleanly() {
+        let res = run_gc(true);
+        assert!(res.is_ok());
     }
 }

@@ -63,6 +63,11 @@ pub fn setup_cni_network(container_id: &str, _netns_path: &Path, _ifname: &str) 
                 stderr.trim()
             );
         }
+
+        // Sync TAP MTU (1500) to prevent packet truncation on overlay/jumbo-frame networks
+        let _ = Command::new(&ip_bin)
+            .args(["link", "set", "dev", &tap_name, "mtu", "1500"])
+            .output();
     }
 
     println!(
@@ -84,6 +89,28 @@ pub fn tap_exists(name: &str) -> bool {
         }
     }
     false
+}
+
+/// Lists all host TAP devices created for llmman MicroVMs (`vmtap-*`).
+pub fn list_llmman_taps() -> Vec<String> {
+    let mut taps = Vec::new();
+    if let Some(ip_bin) = crate::find_on_path("ip") {
+        if let Ok(output) = Command::new(ip_bin).args(["-o", "link", "show"]).output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let dev = parts[1].trim_end_matches(':');
+                        if dev.starts_with("vmtap-") {
+                            taps.push(dev.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    taps
 }
 
 /// Tears down the network namespace and TAP device using CNI.
@@ -115,4 +142,23 @@ pub fn teardown_cni_network(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tap_exists_nonexistent() {
+        assert!(!tap_exists("nonexistent-vmtap-999"));
+    }
+
+    #[test]
+    fn test_list_llmman_taps() {
+        // Runs without error and returns vector
+        let taps = list_llmman_taps();
+        for tap in taps {
+            assert!(tap.starts_with("vmtap-"));
+        }
+    }
 }
