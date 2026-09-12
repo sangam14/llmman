@@ -5,7 +5,7 @@ use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::runtime::{cni, firecracker, pool, rootfs};
+use crate::runtime::{cni, kernel, lifecycle, pool, process};
 
 #[derive(Args, Debug)]
 pub struct MicrovmArgs {
@@ -87,8 +87,7 @@ fn load_active_vms() -> Vec<MicrovmRecord> {
             if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                     if let Ok(record) = serde_json::from_str::<MicrovmRecord>(&content) {
-                        // Verify if process is still alive on Unix
-                        if is_process_alive(record.pid) {
+                        if process::is_alive(record.pid) {
                             records.push(record);
                         } else {
                             // Clean up dead process record
@@ -101,23 +100,6 @@ fn load_active_vms() -> Vec<MicrovmRecord> {
     }
     records.sort_by(|a, b| a.id.cmp(&b.id));
     records
-}
-
-fn is_process_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe {
-            if libc::kill(pid as i32, 0) == 0 {
-                true
-            } else {
-                std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
 }
 
 pub async fn run(args: &MicrovmArgs) -> Result<()> {
@@ -146,109 +128,40 @@ pub async fn run(args: &MicrovmArgs) -> Result<()> {
 }
 
 async fn boot_microvm(
-    kernel: &Path,
+    kernel_hint: &Path,
     rootfs_size_mb: u64,
     vcpus: u32,
     memory_mb: u64,
     model: &str,
     detach: bool,
 ) -> Result<()> {
-    let vm_id = format!("vm-{:08x}", std::process::id());
-    let temp_dir = tempfile::tempdir().context("Failed to create tempdir for microvm")?;
-    let socket_path = temp_dir.path().join("firecracker.socket");
-    let rootfs_path = temp_dir.path().join("rootfs.ext4");
-
     println!("\x1b[1;36m[llmman]\x1b[0m Initializing Firecracker MicroVM Execution Environment...");
 
-    // 1. Kernel Resolution
-    let kernel_path = if kernel.exists() {
-        kernel.to_path_buf()
-    } else if Path::new("/Users/apple/llmman/packaging/kernel/vmlinux-6.18.45-agentkernel").exists()
-    {
-        PathBuf::from("/Users/apple/llmman/packaging/kernel/vmlinux-6.18.45-agentkernel")
-    } else if Path::new("/tmp/llmman-kernel/vmlinux-6.18.45-agentkernel").exists() {
-        PathBuf::from("/tmp/llmman-kernel/vmlinux-6.18.45-agentkernel")
-    } else {
-        PathBuf::from("/tmp/llmman-kernel/vmlinux")
+    // Use the unified lifecycle
+    let config = lifecycle::VmConfig {
+        vcpus,
+        memory_mb,
+        rootfs_size_mb,
+        kernel_path: Some(kernel_hint.to_path_buf()),
+        ..lifecycle::VmConfig::default()
     };
-    let kernel_ver = "Linux 6.18.45-agentkernel (AgentKernel VirtIO Minimal)";
-    println!(
-        "\x1b[1;32m[kernel]\x1b[0m Image: {} [{}]",
-        kernel_path.display(),
-        kernel_ver
-    );
 
-    // 2. ext4 Rootfs Generation
-    rootfs::create_ext4_rootfs(Path::new("/tmp"), &rootfs_path, rootfs_size_mb)?;
-
-    // 3. CNI Network TAP Plumbing
-    let tap_name = cni::setup_cni_network(&vm_id, temp_dir.path(), "eth0")?;
+    let booted = lifecycle::boot(&config).await?;
+    let vm_id = booted.id.clone();
+    let pid = booted.vm.pid().unwrap_or(std::process::id());
+    let tap_name = booted.tap_name.clone();
+    let active_socket = booted.socket_path.clone();
+    let resolved_kernel = booted.kernel_path.clone();
+    let from_pool = booted.from_pool;
     let guest_ip = "172.16.0.2";
-    let guest_mac = "06:00:00:00:00:01";
-
-    // 4. Pre-Warmed Pool Check
-    println!(
-        "\x1b[1;35m[pool]\x1b[0m Checking VmPool (warm capacity: 3 instances, SLA < 100ms)..."
-    );
-    let vm_pool = pool::VmPool::new(
-        3,
-        Path::new("firecracker").to_path_buf(),
-        temp_dir.path().to_path_buf(),
-    );
-    let (fc, from_pool) = match vm_pool.acquire().await {
-        Ok(Some(vm)) => {
-            println!(
-                "\x1b[1;32m[pool]\x1b[0m Acquired pre-warmed Firecracker instance from VmPool!"
-            );
-            (vm, true)
-        }
-        _ => {
-            println!(
-                "\x1b[1;34m[firecracker]\x1b[0m Spawning fresh microVM process (Socket: {})...",
-                socket_path.display()
-            );
-            (
-                firecracker::FirecrackerVm::spawn(Path::new("firecracker"), &socket_path)?,
-                false,
-            )
-        }
-    };
-
-    // 5. REST API Socket Configuration (AgentKernel Minimal Spec)
-    println!(
-        "\x1b[1;34m[firecracker]\x1b[0m Configuring Machine Config (vCPUs: {}, Mem: {} MiB)...",
-        vcpus, memory_mb
-    );
-    fc.set_machine_config(vcpus, memory_mb)?;
-
-    println!("\x1b[1;34m[firecracker]\x1b[0m Configuring Boot Source via Unix socket...");
-    let cmdline = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init quiet loglevel=4 i8042.nokbd i8042.noaux";
-    fc.set_boot_source(&kernel_path, cmdline)?;
-
-    println!(
-        "\x1b[1;34m[firecracker]\x1b[0m Attaching VirtIO-Blk root drive: {}",
-        rootfs_path.display()
-    );
-    fc.set_rootfs(&rootfs_path, true)?;
-
-    println!(
-        "\x1b[1;34m[firecracker]\x1b[0m Configuring VirtIO-Net (TAP: {}, MAC: {})...",
-        tap_name, guest_mac
-    );
-    fc.add_network_interface("eth0", &tap_name, guest_mac)?;
-
-    println!("\x1b[1;34m[firecracker]\x1b[0m Dispatching Action: InstanceStart...");
-    fc.start()?;
-
-    let pid = fc.pid().unwrap_or(std::process::id());
-    let active_socket = fc.socket_path().to_path_buf();
+    let guest_mac = &config.guest_mac;
 
     // Record the VM
     let record = MicrovmRecord {
         id: vm_id.clone(),
         pid,
         status: "RUNNING".to_string(),
-        kernel: "6.18.45-agentkernel".to_string(),
+        kernel: kernel::KERNEL_VERSION.to_string(),
         vcpus,
         memory_mb,
         ip: guest_ip.to_string(),
@@ -259,13 +172,18 @@ async fn boot_microvm(
     };
     save_vm_record(&record)?;
 
-    // Preserve temp directory so socket and rootfs survive
-    let _ = temp_dir.keep();
-
-    // 6. Print Console Boot Output
+    // Print boot output
+    println!(
+        "\x1b[1;32m[kernel]\x1b[0m Image: {} [{}]",
+        resolved_kernel.display(),
+        kernel::KERNEL_BANNER
+    );
     println!("\n\x1b[1;32m─── MicroVM Guest Console [TTY0] ───────────────────────────────────────────────\x1b[0m");
-    println!("[    0.000000] Linux version 6.18.45-agentkernel (root@buildkit) (gcc 13.2.0) #1 SMP PREEMPT");
-    println!("[    0.000000] Command line: console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init quiet loglevel=4 i8042.nokbd i8042.noaux");
+    println!(
+        "[    0.000000] Linux version {} (root@buildkit) (gcc 13.2.0) #1 SMP PREEMPT",
+        kernel::KERNEL_VERSION
+    );
+    println!("[    0.000000] Command line: {}", kernel::DEFAULT_BOOT_ARGS);
     println!("[    0.000000] BIOS-provided physical RAM map:");
     println!("[    0.000000]  BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable");
     println!(
@@ -300,7 +218,10 @@ async fn boot_microvm(
     println!("  \x1b[1mVM ID:\x1b[0m        {}", vm_id);
     println!("  \x1b[1mPID:\x1b[0m          {}", pid);
     println!("  \x1b[1mSTATUS:\x1b[0m       \x1b[1;32mRUNNING\x1b[0m");
-    println!("  \x1b[1mKERNEL:\x1b[0m       Linux 6.18.45-agentkernel");
+    println!(
+        "  \x1b[1mKERNEL:\x1b[0m       Linux {}",
+        kernel::KERNEL_VERSION
+    );
     println!("  \x1b[1mvCPUs:\x1b[0m        {}", vcpus);
     println!("  \x1b[1mMEMORY:\x1b[0m       {} MB", memory_mb);
     println!(
@@ -316,12 +237,16 @@ async fn boot_microvm(
             "Cold-booted Firecracker"
         }
     );
-    println!("  \x1b[1mAPI SOCKET:\x1b[0m   {}", socket_path.display());
+    println!("  \x1b[1mAPI SOCKET:\x1b[0m   {}", active_socket.display());
 
     if !detach {
-        println!("\n[llmman] MicroVM running. Press Ctrl+C or run `llmman microvm stop {}` to terminate.", vm_id);
-        // Keep child process managed
-        let mut child = fc.into_inner().context("Failed to retain child process")?;
+        println!(
+            "\n[llmman] MicroVM running. Press Ctrl+C or run `llmman microvm stop {}` to terminate.",
+            vm_id
+        );
+        let mut child = booted
+            .into_child()
+            .context("Failed to retain child process")?;
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 println!("\n[llmman] Shutting down MicroVM {}...", vm_id);
@@ -334,6 +259,8 @@ async fn boot_microvm(
             }
         }
     } else {
+        // In detach mode, leak the child so the VM keeps running.
+        let _ = booted.into_child();
         println!("\n[llmman] MicroVM running in background (PID {}).", pid);
     }
 
@@ -350,40 +277,8 @@ fn list_microvms() {
     println!("{:-<105}", "");
 
     if vms.is_empty() {
-        // If no standalone CLI microVM is active, also display sample registered active node VMs
-        println!(
-            "{:<14} {:<8} \x1b[1;32m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
-            "vm-01h8x9a",
-            "28410",
-            "RUNNING",
-            "4",
-            "8192 MB",
-            "172.16.0.2",
-            "6.18.45-agentkernel",
-            "llama-3-8b-instruct"
-        );
-        println!(
-            "{:<14} {:<8} \x1b[1;32m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
-            "vm-01h8x9b",
-            "28412",
-            "RUNNING",
-            "4",
-            "8192 MB",
-            "172.16.0.3",
-            "6.18.45-agentkernel",
-            "vllm-deepseek-coder"
-        );
-        println!(
-            "{:<14} {:<8} \x1b[1;33m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
-            "vm-01h8x9c",
-            "28415",
-            "PAUSED",
-            "2",
-            "4096 MB",
-            "172.16.0.4",
-            "6.18.45-agentkernel",
-            "qwen-2.5-7b"
-        );
+        println!("No active MicroVMs.");
+        println!("\nRun \x1b[1mllmman microvm run\x1b[0m to boot a new instance.");
     } else {
         for vm in vms {
             let (color_start, color_end) = if vm.status == "RUNNING" {
@@ -417,13 +312,34 @@ async fn show_vm_pool() {
     );
     let _ = pool.warm().await;
 
+    let pool_len = pool.len().await;
+    let target = 3;
+    let health = if pool_len > 0 { "HEALTHY" } else { "EMPTY" };
+    let health_color = if pool_len > 0 { "32" } else { "33" };
+
     println!("\x1b[1;35mPre-Warmed MicroVM Pool (VmPool Status):\x1b[0m");
-    println!("  Target Capacity:     3 instances");
-    println!("  Warm Instances:      \x1b[1;32m3 ready\x1b[0m");
-    println!("  Acquisition Latency: \x1b[1;32m42ms\x1b[0m (Sub-100ms CNCF SLA)");
-    println!("  Replenishment:       Active (background async tokio worker)");
-    println!("  Kernel Image:        Linux 6.18.45-agentkernel (/Users/apple/llmman/packaging/kernel/microvm.config)");
-    println!("  State:               \x1b[1;32mHEALTHY\x1b[0m");
+    println!("  Target Capacity:     {} instances", target);
+    println!(
+        "  Warm Instances:      \x1b[1;{}m{} ready\x1b[0m",
+        health_color, pool_len
+    );
+    println!(
+        "  Replenishment:       {}",
+        if pool_len < target {
+            "Active (background async tokio worker)"
+        } else {
+            "Idle (pool at capacity)"
+        }
+    );
+    println!(
+        "  Kernel Image:        Linux {} ({})",
+        kernel::KERNEL_VERSION,
+        kernel::resolve_kernel_path(None).display()
+    );
+    println!(
+        "  State:               \x1b[1;{}m{}\x1b[0m",
+        health_color, health
+    );
 }
 
 fn stop_microvm(vm_id: &str) {
@@ -432,10 +348,7 @@ fn stop_microvm(vm_id: &str) {
     if file_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&file_path) {
             if let Ok(record) = serde_json::from_str::<MicrovmRecord>(&content) {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(record.pid as i32, libc::SIGTERM);
-                }
+                let _ = process::terminate(record.pid);
                 if !record.tap.is_empty() {
                     let _ = cni::teardown_cni_network(
                         &record.id,

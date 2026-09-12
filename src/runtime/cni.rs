@@ -4,7 +4,7 @@
 //! to establish a network namespace, assign an IP via IPAM (like `host-local`), and
 //! create a TAP device that Firecracker can consume.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
@@ -33,16 +33,35 @@ pub fn setup_cni_network(container_id: &str, _netns_path: &Path, _ifname: &str) 
     );
 
     if let Some(ip_bin) = crate::find_on_path("ip") {
-        let status = Command::new(&ip_bin)
+        let output = Command::new(&ip_bin)
             .args(["tuntap", "add", "dev", &tap_name, "mode", "tap"])
-            .status();
+            .output()
+            .context("Failed to execute `ip tuntap add`")?;
 
-        if let Ok(st) = status {
-            if st.success() {
-                let _ = Command::new(&ip_bin)
-                    .args(["link", "set", "dev", &tap_name, "up"])
-                    .status();
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // EEXIST is acceptable — the device may already exist from a prior run.
+            if !stderr.contains("File exists") {
+                anyhow::bail!(
+                    "[cni] Failed to create TAP device {}: {}",
+                    tap_name,
+                    stderr.trim()
+                );
             }
+        }
+
+        let link_output = Command::new(&ip_bin)
+            .args(["link", "set", "dev", &tap_name, "up"])
+            .output()
+            .context("Failed to execute `ip link set up`")?;
+
+        if !link_output.status.success() {
+            let stderr = String::from_utf8_lossy(&link_output.stderr);
+            eprintln!(
+                "[cni] Warning: failed to bring up {}: {}",
+                tap_name,
+                stderr.trim()
+            );
         }
     }
 
@@ -52,6 +71,19 @@ pub fn setup_cni_network(container_id: &str, _netns_path: &Path, _ifname: &str) 
     );
 
     Ok(tap_name)
+}
+
+/// Returns `true` if a TAP device with the given name exists on the host.
+pub fn tap_exists(name: &str) -> bool {
+    if let Some(ip_bin) = crate::find_on_path("ip") {
+        if let Ok(output) = Command::new(ip_bin)
+            .args(["link", "show", "dev", name])
+            .output()
+        {
+            return output.status.success();
+        }
+    }
+    false
 }
 
 /// Tears down the network namespace and TAP device using CNI.
@@ -64,9 +96,22 @@ pub fn teardown_cni_network(
     println!("[cni] Tearing down network for {} via CNI", container_id);
 
     if let Some(ip_bin) = crate::find_on_path("ip") {
-        let _ = Command::new(ip_bin)
+        let output = Command::new(ip_bin)
             .args(["link", "del", "dev", tap_name])
-            .status();
+            .output()
+            .context("Failed to execute `ip link del`")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Device may already be gone — not an error.
+            if !stderr.contains("Cannot find device") {
+                eprintln!(
+                    "[cni] Warning: failed to delete {}: {}",
+                    tap_name,
+                    stderr.trim()
+                );
+            }
+        }
     }
 
     Ok(())

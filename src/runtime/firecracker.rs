@@ -77,26 +77,38 @@ impl FirecrackerVm {
         self.process.as_ref().and_then(|p| p.id())
     }
 
-    /// Sends a JSON payload via HTTP PUT to the Firecracker API.
-    fn put(&self, path: &str, body: &str) -> Result<()> {
+    // -----------------------------------------------------------------------
+    // HTTP transport — single implementation for all verbs
+    // -----------------------------------------------------------------------
+
+    /// Sends an HTTP request to the Firecracker API over the Unix socket.
+    /// Returns the full response body as a `String`.
+    fn request(&self, method: &str, path: &str, body: Option<&str>) -> Result<String> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .context("Failed to connect to Firecracker API socket")?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-        let request = format!(
-            "PUT {} HTTP/1.1\r\n\
-             Host: localhost\r\n\
-             Accept: application/json\r\n\
-             Content-Type: application/json\r\n\
-             Connection: close\r\n\
-             Content-Length: {}\r\n\
-             \r\n\
-             {}",
-            path,
-            body.len(),
-            body
-        );
+        let request = match body {
+            Some(b) => format!(
+                "{method} {path} HTTP/1.1\r\n\
+                 Host: localhost\r\n\
+                 Accept: application/json\r\n\
+                 Content-Type: application/json\r\n\
+                 Connection: close\r\n\
+                 Content-Length: {}\r\n\
+                 \r\n\
+                 {b}",
+                b.len()
+            ),
+            None => format!(
+                "{method} {path} HTTP/1.1\r\n\
+                 Host: localhost\r\n\
+                 Accept: application/json\r\n\
+                 Connection: close\r\n\
+                 \r\n"
+            ),
+        };
 
         stream.write_all(request.as_bytes())?;
 
@@ -107,129 +119,105 @@ impl FirecrackerVm {
             anyhow::bail!("API Error on {}: {}", path, response);
         }
 
+        Ok(response)
+    }
+
+    /// Sends a JSON payload via HTTP PUT to the Firecracker API.
+    fn put(&self, path: &str, body: &str) -> Result<()> {
+        self.request("PUT", path, Some(body))?;
         Ok(())
     }
 
     /// Sends a JSON payload via HTTP PATCH to the Firecracker API.
     fn patch(&self, path: &str, body: &str) -> Result<()> {
-        let mut stream = UnixStream::connect(&self.socket_path)
-            .context("Failed to connect to Firecracker API socket")?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-        let request = format!(
-            "PATCH {} HTTP/1.1\r\n\
-             Host: localhost\r\n\
-             Accept: application/json\r\n\
-             Content-Type: application/json\r\n\
-             Connection: close\r\n\
-             Content-Length: {}\r\n\
-             \r\n\
-             {}",
-            path,
-            body.len(),
-            body
-        );
-
-        stream.write_all(request.as_bytes())?;
-
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-
-        if !response.contains("HTTP/1.1 204 No Content") && !response.contains("HTTP/1.1 200 OK") {
-            anyhow::bail!("API Error on {}: {}", path, response);
-        }
-
+        self.request("PATCH", path, Some(body))?;
         Ok(())
     }
 
+    /// Sends a GET request and returns the response body.
+    pub fn get(&self, path: &str) -> Result<String> {
+        self.request("GET", path, None)
+    }
+
+    /// Returns `true` if the VM is responsive (GET /vm succeeds).
+    pub fn is_healthy(&self) -> bool {
+        self.get("/vm").is_ok()
+    }
+
+    // -----------------------------------------------------------------------
+    // VM state management
+    // -----------------------------------------------------------------------
+
     pub fn pause(&self) -> Result<()> {
-        let body = r#"{"state": "Paused"}"#;
-        self.patch("/vm", body)
+        let body = serde_json::json!({"state": "Paused"}).to_string();
+        self.patch("/vm", &body)
     }
 
     pub fn resume(&self) -> Result<()> {
-        let body = r#"{"state": "Resumed"}"#;
-        self.patch("/vm", body)
+        let body = serde_json::json!({"state": "Resumed"}).to_string();
+        self.patch("/vm", &body)
     }
 
     pub fn create_snapshot(&self, snapshot_path: &Path, mem_file_path: &Path) -> Result<()> {
-        let body = format!(
-            r#"{{
-                "snapshot_type": "Full",
-                "snapshot_path": "{}",
-                "mem_file_path": "{}"
-            }}"#,
-            snapshot_path.display(),
-            mem_file_path.display()
-        );
+        let body = serde_json::json!({
+            "snapshot_type": "Full",
+            "snapshot_path": snapshot_path.display().to_string(),
+            "mem_file_path": mem_file_path.display().to_string(),
+        })
+        .to_string();
         self.put("/snapshot/create", &body)
     }
 
     pub fn load_snapshot(&self, snapshot_path: &Path, mem_file_path: &Path) -> Result<()> {
-        let body = format!(
-            r#"{{
-                "snapshot_path": "{}",
-                "mem_backend": {{
-                    "backend_type": "File",
-                    "backend_path": "{}"
-                }},
-                "resume_vm": false
-            }}"#,
-            snapshot_path.display(),
-            mem_file_path.display()
-        );
+        let body = serde_json::json!({
+            "snapshot_path": snapshot_path.display().to_string(),
+            "mem_backend": {
+                "backend_type": "File",
+                "backend_path": mem_file_path.display().to_string(),
+            },
+            "resume_vm": false,
+        })
+        .to_string();
         self.put("/snapshot/load", &body)
     }
 
     pub fn set_boot_source(&self, kernel_path: &Path, cmdline: &str) -> Result<()> {
-        let body = format!(
-            r#"{{
-                "kernel_image_path": "{}",
-                "boot_args": "{}"
-            }}"#,
-            kernel_path.display(),
-            cmdline
-        );
+        let body = serde_json::json!({
+            "kernel_image_path": kernel_path.display().to_string(),
+            "boot_args": cmdline,
+        })
+        .to_string();
         self.put("/boot-source", &body)
     }
 
     /// Configures the machine vCPU count and memory size (identical to agentkernel MachineConfig).
     pub fn set_machine_config(&self, vcpu_count: u32, mem_size_mib: u64) -> Result<()> {
-        let body = format!(
-            r#"{{
-                "vcpu_count": {},
-                "mem_size_mib": {}
-            }}"#,
-            vcpu_count, mem_size_mib
-        );
+        let body = serde_json::json!({
+            "vcpu_count": vcpu_count,
+            "mem_size_mib": mem_size_mib,
+        })
+        .to_string();
         self.put("/machine-config", &body)
     }
 
     /// Attaches a virtio-vsock device for guest-to-host IPC.
     pub fn set_vsock(&self, guest_cid: u32, uds_path: &Path) -> Result<()> {
-        let body = format!(
-            r#"{{
-                "guest_cid": {},
-                "uds_path": "{}"
-            }}"#,
-            guest_cid,
-            uds_path.display()
-        );
+        let body = serde_json::json!({
+            "guest_cid": guest_cid,
+            "uds_path": uds_path.display().to_string(),
+        })
+        .to_string();
         self.put("/vsock", &body)
     }
 
     pub fn set_rootfs(&self, drive_path: &Path, is_root: bool) -> Result<()> {
-        let body = format!(
-            r#"{{
-                "drive_id": "rootfs",
-                "path_on_host": "{}",
-                "is_root_device": {},
-                "is_read_only": false
-            }}"#,
-            drive_path.display(),
-            is_root
-        );
+        let body = serde_json::json!({
+            "drive_id": "rootfs",
+            "path_on_host": drive_path.display().to_string(),
+            "is_root_device": is_root,
+            "is_read_only": false,
+        })
+        .to_string();
         self.put("/drives/rootfs", &body)
     }
 
@@ -239,20 +227,18 @@ impl FirecrackerVm {
         host_dev_name: &str,
         mac: &str,
     ) -> Result<()> {
-        let body = format!(
-            r#"{{
-                "iface_id": "{}",
-                "host_dev_name": "{}",
-                "guest_mac": "{}"
-            }}"#,
-            iface_id, host_dev_name, mac
-        );
+        let body = serde_json::json!({
+            "iface_id": iface_id,
+            "host_dev_name": host_dev_name,
+            "guest_mac": mac,
+        })
+        .to_string();
         self.put(&format!("/network-interfaces/{}", iface_id), &body)
     }
 
     pub fn start(&self) -> Result<()> {
-        let body = r#"{"action_type": "InstanceStart"}"#;
-        self.put("/actions", body)
+        let body = serde_json::json!({"action_type": "InstanceStart"}).to_string();
+        self.put("/actions", &body)
     }
 
     /// Consumes the FirecrackerVm and returns the underlying tokio Child process.
@@ -263,12 +249,15 @@ impl FirecrackerVm {
 
 impl Drop for FirecrackerVm {
     fn drop(&mut self) {
-        if let Some(_child) = self.process.take() {
-            // In async contexts, dropping the Child kills it if kill_on_drop is true,
-            // or we could explicitly kill it, but kill() is async.
-            // Since we are taking it, the default tokio Child Drop behavior applies.
-            // (Tokio Child kills process if kill_on_drop is true, but by default it doesn't).
-            // For true cleanup, the caller should `into_inner` and manage the Child.
+        if let Some(mut child) = self.process.take() {
+            // Best-effort synchronous kill. `start_kill()` sends SIGKILL
+            // on Unix without requiring an async runtime.
+            let _ = child.start_kill();
+        }
+        // Clean up the socket file so a subsequent spawn on the same path
+        // does not need to race against the dead process.
+        if self.socket_path.exists() {
+            let _ = std::fs::remove_file(&self.socket_path);
         }
     }
 }
