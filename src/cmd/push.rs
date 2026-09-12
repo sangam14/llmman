@@ -50,7 +50,7 @@ pub fn run(args: &PushArgs) -> anyhow::Result<()> {
         let key = key
             .to_str()
             .context("signing key path is not valid UTF-8")?;
-        let signed = crate::ffi::sign(&reference, digest, key, &crate::verify::signing_password())
+        let signed = crate::oci::sign(&reference, digest, key, &crate::verify::signing_password())
             .with_context(|| format!("sign {reference}"))?;
         println!("Signed {reference} ({signed}) with {key}");
     }

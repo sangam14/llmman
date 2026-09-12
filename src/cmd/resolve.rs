@@ -101,7 +101,7 @@ pub fn run(args: &ResolveArgs) -> anyhow::Result<()> {
                         crate::sources::pull(&src_ref, &store_path, &reference).await
                     }
                     crate::hf::ClassifiedRef::Other(normalized) => {
-                        crate::ffi::pull(&normalized, layout_dir)
+                        crate::oci::pull(&normalized, layout_dir)
                     }
                 }
             })

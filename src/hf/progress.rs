@@ -21,7 +21,7 @@ struct Entry {
 static STATE: LazyLock<Mutex<HashMap<String, Entry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Mirrors `ffi::ProgressSnapshot`'s shape exactly, so `cmd::serve` can
+/// Mirrors `oci::ProgressSnapshot`'s shape exactly, so `cmd::serve` can
 /// treat a Rust-native and a Go-shim-polled snapshot identically.
 #[derive(Serialize, Default)]
 pub struct Snapshot {

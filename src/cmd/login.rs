@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 
 use clap::Args;
 
-use crate::{ffi, hf, oauth};
+use crate::{hf, oauth};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -56,7 +56,7 @@ pub fn run(args: &LoginArgs) -> anyhow::Result<()> {
     if is_default_registry && args.username.is_none() && args.password.is_none() {
         match oauth::login_device() {
             Ok(Some(result)) => {
-                ffi::login(&server, &result.username, &result.password)?;
+                crate::oci::login(&server, &result.username, &result.password)?;
                 println!();
                 println!("Login Succeeded");
                 return Ok(());
@@ -93,7 +93,7 @@ pub fn run(args: &LoginArgs) -> anyhow::Result<()> {
             read_line_stdin()?
         }
     };
-    ffi::login(&server, &username, &password)?;
+    crate::oci::login(&server, &username, &password)?;
     println!("Login succeeded for {server}");
     Ok(())
 }

@@ -22,10 +22,8 @@ use crate::container::{ContainerEngine, ContainerManager};
 pub enum Runtime {
     /// Try `docker`, `podman`, `bin`, `path`, in that order.
     Auto,
-    /// Engines run in Docker containers (Linux only).
-    Docker,
-    /// Engines run in Podman containers (Linux only).
-    Podman,
+    /// Runs the Firecracker MicroVM runtime engine.
+    Firecracker,
     /// llmman's own download of llama.cpp's prebuilt `llama-server`.
     Bin,
     /// Whatever `llama-server` is on `PATH`; nothing is ever downloaded.
@@ -36,8 +34,7 @@ impl Runtime {
     /// The container engine this runtime is, if it is one.
     pub fn ociman(self) -> Option<ContainerManager> {
         match self {
-            Runtime::Docker => Some(ContainerManager::Docker),
-            Runtime::Podman => Some(ContainerManager::Podman),
+            Runtime::Firecracker => Some(ContainerManager::Firecracker),
             Runtime::Auto | Runtime::Bin | Runtime::Path => None,
         }
     }
@@ -46,8 +43,7 @@ impl Runtime {
     pub fn as_str(self) -> &'static str {
         match self {
             Runtime::Auto => "auto",
-            Runtime::Docker => "docker",
-            Runtime::Podman => "podman",
+            Runtime::Firecracker => "firecracker",
             Runtime::Bin => "bin",
             Runtime::Path => "path",
         }
@@ -55,8 +51,7 @@ impl Runtime {
 
     fn from_ociman(ociman: ContainerManager) -> Runtime {
         match ociman {
-            ContainerManager::Docker => Runtime::Docker,
-            ContainerManager::Podman => Runtime::Podman,
+            ContainerManager::Firecracker => Runtime::Firecracker,
         }
     }
 }
@@ -135,8 +130,7 @@ fn candidates(runtime: Runtime, local_only: bool) -> Vec<Runtime> {
     match runtime {
         Runtime::Auto if cfg!(target_os = "linux") && !local_only => {
             vec![
-                Runtime::Docker,
-                Runtime::Podman,
+                Runtime::Firecracker,
                 Runtime::Bin,
                 Runtime::Path,
             ]
@@ -185,7 +179,7 @@ fn try_one(
 ) -> Result<Resolved> {
     match candidate {
         Runtime::Auto => unreachable!("auto is expanded by candidates()"),
-        Runtime::Docker | Runtime::Podman => {
+        Runtime::Firecracker => {
             let ociman = candidate.ociman().expect("container runtime");
             if !cfg!(target_os = "linux") {
                 anyhow::bail!(
@@ -265,8 +259,7 @@ mod tests {
     fn runtime_spellings_round_trip() {
         for (s, r) in [
             ("auto", Runtime::Auto),
-            ("docker", Runtime::Docker),
-            ("podman", Runtime::Podman),
+            ("firecracker", Runtime::Firecracker),
             ("bin", Runtime::Bin),
             ("path", Runtime::Path),
         ] {
@@ -277,8 +270,7 @@ mod tests {
 
     #[test]
     fn only_container_runtimes_have_an_ociman() {
-        assert_eq!(Runtime::Docker.ociman(), Some(ContainerManager::Docker));
-        assert_eq!(Runtime::Podman.ociman(), Some(ContainerManager::Podman));
+        assert_eq!(Runtime::Firecracker.ociman(), Some(ContainerManager::Firecracker));
         assert_eq!(Runtime::Auto.ociman(), None);
         assert_eq!(Runtime::Bin.ociman(), None);
         assert_eq!(Runtime::Path.ociman(), None);
@@ -300,7 +292,7 @@ mod tests {
         }
         // Refused before any docker/podman binary is looked for, so this
         // is deterministic on a macOS/Windows developer machine too.
-        let err = resolve(Runtime::Docker, None).unwrap_err().to_string();
+        let err = resolve(Runtime::Firecracker, None).unwrap_err().to_string();
         assert!(err.contains("only supported on Linux"), "{err}");
     }
 
@@ -316,9 +308,9 @@ mod tests {
             local.llama_server_bin(),
             Some(&PathBuf::from("/usr/bin/llama-server"))
         );
-        let container = Resolved::Container(ContainerManager::Podman);
-        assert_eq!(container.runtime(), Runtime::Podman);
-        assert_eq!(container.ociman(), Some(ContainerManager::Podman));
+        let container = Resolved::Container(ContainerManager::Firecracker);
+        assert_eq!(container.runtime(), Runtime::Firecracker);
+        assert_eq!(container.ociman(), Some(ContainerManager::Firecracker));
         assert_eq!(container.llama_server_bin(), None);
     }
 }

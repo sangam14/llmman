@@ -41,3 +41,8 @@ vllm-plugin/build
 webui/**/*.png
 webui/**/*.jpg
 webui/**/*.gif
+
+# Elixir / Phoenix Dashboard
+dashboard/_build/
+dashboard/deps/
+dashboard/.elixir_ls/

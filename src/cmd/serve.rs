@@ -601,7 +601,7 @@ fn now_rfc3339() -> String {
 }
 
 /// Per-model registry of locks serializing every call into the Go shim's
-/// `llmman_pull`/`llmman_push` (see `crate::ffi::pull`/`push`) for a given
+/// `llmman_pull`/`llmman_push` (see `crate::oci::pull`/`push`) for a given
 /// model reference — replacing what used to be one `PULL_LOCK` mutex
 /// shared by every model in the process.
 ///
@@ -703,7 +703,7 @@ async fn acquire_load_lock(model: &str) -> LoadLockGuard {
     }
 }
 
-/// The reference an OCI-registry pull hands `ffi::pull`: the string
+/// The reference an OCI-registry pull hands `oci::pull`: the string
 /// `stream_ffi_progress` polls progress under, never the `:latest`-
 /// defaulted `classified`. The shim keys byte progress on what it is
 /// given and defaults the tag itself, so `classified` files the counts
@@ -796,7 +796,7 @@ fn pull_serialized(store_path: &std::path::Path, model: &str) -> anyhow::Result<
                     // model the policy will reject costs one manifest
                     // lookup instead of a multi-gigabyte download...
                     let guard = crate::verify::PullGuard::check(&normalized)?;
-                    crate::ffi::pull(ffi_pull_ref(model, &normalized), layout_dir)?;
+                    crate::oci::pull(ffi_pull_ref(model, &normalized), layout_dir)?;
                     // ...and confirmed afterwards against what actually
                     // landed, so a tag repointed mid-pull can't slip
                     // past the check that just passed.

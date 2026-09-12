@@ -35,7 +35,7 @@
 //! [auth]                               # cmd::serve::auth
 //! api_keys = "k1,k2"                   # what a request to this daemon must present
 //!
-//! [registries."docker.io"]             # crate::ffi, go-shim
+//! [registries."docker.io"]             # crate::oci, go-shim
 //! mirrors = "https://mirror.gcr.io,registry-mirror.corp:5000"
 //! ```
 //!

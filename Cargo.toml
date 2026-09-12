@@ -1,5 +1,6 @@
 [package]
 name = "llmman"
+default-run = "llmman"
 # MAJOR.MINOR only: CI replaces PATCH with the commit count before building
 # and publishing (packaging/version.sh), so every commit on main ships as
 # e.g. 0.1.324. Bump MAJOR or MINOR here to start a new series; leave PATCH 0.
@@ -107,14 +108,21 @@ hf-xet = "=1.6.0"
 aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process", "sso"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 
+# CNCF Architecture Dependencies (Firecracker + Native OCI)
+oci-distribution = "0.10"
+sigstore = "0.7"
+# We will use reqwest to talk to Firecracker REST API over UDS (hyper+tokio)
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+tempfile = "3"
+
+
 [features]
-default = ["docker"]
-docker = []
-podman = []
+default = []
+fuzzing = []
 # Exposes a #[doc(hidden)] pub wrapper around private parser internals for
 # the fuzz/ crate to call. Never enabled outside fuzzing: it does not
 # change any parsing behavior, only visibility.
-fuzzing = []
 
 [dev-dependencies]
 tempfile = "3"

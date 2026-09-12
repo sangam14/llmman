@@ -12,7 +12,7 @@
 //! opinions about which inference backend to launch.
 //!
 //! Everything here assumes the reference has already been pulled into the
-//! local `OciStore` at `store_path` (see `crate::ffi::pull`) — this module
+//! local `OciStore` at `store_path` (see `crate::oci::pull`) — this module
 //! only resolves+extracts, it never talks to a registry itself.
 
 use std::path::{Path, PathBuf};

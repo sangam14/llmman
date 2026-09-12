@@ -1,6 +1,6 @@
 use clap::Args;
 
-use crate::{ffi, hf};
+use crate::hf;
 
 #[derive(Args, Debug)]
 pub struct LogoutArgs {
@@ -22,7 +22,7 @@ pub fn run(args: &LogoutArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    ffi::logout(&server)?;
+    crate::oci::logout(&server)?;
     println!("Logged out of {server}");
     Ok(())
 }

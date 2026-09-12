@@ -1,5 +1,5 @@
 use clap::{CommandFactory, Parser, Subcommand};
-use llmman::{cmd, daemon, ffi, hostgpu};
+use llmman::{cmd, daemon, hostgpu, oci};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -63,6 +63,11 @@ enum Commands {
     Show(cmd::show::ShowArgs),
     /// Start an inference server (Ollama, OpenAI, Anthropic compatible APIs)
     Serve(cmd::serve::ServeArgs),
+    /// Manage Firecracker full-state snapshots
+    #[command(subcommand)]
+    Snapshot(cmd::snapshot::SnapshotCommand),
+    /// Manage and monitor Firecracker MicroVM execution
+    Microvm(cmd::microvm::MicrovmArgs),
     /// Probe the local host's GPU/accelerator support (internal diagnostic)
     #[command(hide = true)]
     GpuDiscover(cmd::gpu_discover::GpuDiscoverArgs),
@@ -73,6 +78,15 @@ enum Commands {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--internal-firecracker-daemon"))
+    {
+        if let Some(sock) = std::env::args_os().nth(2) {
+            let _ = llmman::runtime::firecracker::run_internal_daemon(std::path::Path::new(&sock));
+        }
+        std::process::exit(0);
+    }
+
     // Deliberately checked before anything else in this function — not a
     // documented subcommand (absent from `Commands`/`--help` on purpose)
     // and not routed through clap at all: this is `hostgpu::detect`'s own
@@ -81,7 +95,7 @@ fn main() {
     // process of exactly this same binary. See
     // `hostgpu::probe_subprocess_main`'s own doc comment for why that
     // isolation exists at all, and why this has to run before
-    // `ffi::ensure_runtime_init`/`daemon::disable_std_handle_inheritance`
+    // `oci::ensure_runtime_init`/`daemon::disable_std_handle_inheritance`
     // below: this child is meant to do nothing but the one raw probe and
     // exit, as fast and dependency-free as possible.
     if std::env::args_os().nth(1).as_deref()
@@ -90,13 +104,13 @@ fn main() {
         hostgpu::probe_subprocess_main();
     }
 
-    // Must happen before any other call into the `ffi` module, from every
+    // Must happen before any other call into the `oci` module, from every
     // process that links the Go shim in — both this CLI's own process and
     // the detached `llmman serve` daemon it spawns (a separate process,
     // with its own copy of the shim's Go runtime to bootstrap) each reach
-    // this same `main()`. See ffi::ensure_runtime_init's own doc comment
+    // this same `main()`. See oci::ensure_runtime_init's own doc comment
     // for why this is necessary on Windows specifically.
-    ffi::ensure_runtime_init();
+    oci::ensure_runtime_init();
     // As early as possible, before this process (directly, or via
     // daemon::ensure_server) can spawn anything else on Windows — see
     // daemon::disable_std_handle_inheritance's own doc comment for the
@@ -133,6 +147,12 @@ fn main() {
         Commands::Stop(a) => cmd::stop::run(a),
         Commands::Show(a) => cmd::show::run(a),
         Commands::Serve(a) => cmd::serve::run(a),
+        Commands::Snapshot(a) => tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime")
+            .block_on(a.run()),
+        Commands::Microvm(a) => tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime")
+            .block_on(cmd::microvm::run(a)),
         Commands::GpuDiscover(a) => cmd::gpu_discover::run(a),
     };
     if let Err(e) = result {

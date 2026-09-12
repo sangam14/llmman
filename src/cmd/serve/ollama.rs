@@ -388,7 +388,7 @@ async fn push_impl(
             let layout_dir = store_path
                 .to_str()
                 .ok_or_else(|| anyhow!("store path is not valid UTF-8"))?;
-            crate::ffi::push(layout_dir, &model_for_task)?;
+            crate::oci::push(layout_dir, &model_for_task)?;
             // Read inside the lock, so this is the manifest this push
             // put there and not one a concurrent push retagged.
             let desc = OciStore::open(&store_path)?.find(&model_for_task)?;
@@ -467,7 +467,7 @@ pub(super) fn progress_line(
 
 /// Runs `task` (a blocking FFI call already dispatched via spawn_blocking)
 /// to completion, streaming an immediate `first_status` line, then polling
-/// `ffi::progress(&model)` every 200ms (matching the Go shim's own mpb
+/// `oci::progress(&model)` every 200ms (matching the Go shim's own mpb
 /// refresh rate) until the task finishes, then a final `{"status": "success"}` or
 /// `{"error": ...}` line. Shared by handle_pull and handle_push.
 ///
@@ -529,7 +529,7 @@ fn stream_ffi_progress<T: StreamedOutcome + Send + 'static>(
                         // two will ever actually be tracking `model` for a
                         // given task.
                         let rust_snap = crate::hf::progress::poll(&model);
-                        let go_snap = (rust_snap.total == 0).then(|| crate::ffi::progress(&model).ok()).flatten();
+                        let go_snap = (rust_snap.total == 0).then(|| crate::oci::progress(&model).ok()).flatten();
                         let (status, total, completed) = if rust_snap.total > 0 {
                             (rust_snap.status, rust_snap.total, rust_snap.completed)
                         } else if !rust_snap.status.is_empty() {

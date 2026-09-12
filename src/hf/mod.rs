@@ -5,7 +5,7 @@
 //!
 //! [`classify`] below is where every reference is routed, once: to this
 //! module, to `crate::sources` (`ms://`, `ngc://`, `s3://`, `gs://`, a
-//! local directory), or to the Go shim (`crate::ffi`) — which is now
+//! local directory), or to the Go shim (`crate::oci`) — which is now
 //! reached only for actual OCI-registry-protocol work (`push`,
 //! `inspect`, and registry `pull`/`transfer`), the only part that needs
 //! containerd's/podman's Go libraries.
@@ -311,7 +311,7 @@ pub enum ClassifiedRef {
     ///
     /// Not a progress key: the shim tracks byte progress under the
     /// literal string it is handed, so a caller that also polls
-    /// `ffi::progress` must pass `ffi::pull` the reference it polls
+    /// `oci::progress` must pass `oci::pull` the reference it polls
     /// with. See `cmd::serve`'s `ffi_pull_ref`.
     Other(String),
 }

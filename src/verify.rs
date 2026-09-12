@@ -1,7 +1,7 @@
 //! Signature trust policy: which references must be signed, and by whom.
 //!
 //! The cryptography lives in the Go shim (go-shim/sigstore.go, reached
-//! through [`crate::ffi::verify`]); this module decides *when* to invoke
+//! through [`crate::oci::verify`]); this module decides *when* to invoke
 //! it and *what a negative answer means*, which is a policy question.
 //!
 //! Policy comes from the `[verify]` section of `llmman.conf` (see
@@ -542,7 +542,7 @@ fn check_with(
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
 
-    let report = match crate::ffi::verify(reference, digest.unwrap_or(""), &keys) {
+    let report = match crate::oci::verify(reference, digest.unwrap_or(""), &keys) {
         Ok(report) => report,
         // No answer could be reached (unreadable key, unreachable
         // registry). Under `enforce` that is indistinguishable from
@@ -686,7 +686,7 @@ impl PullGuard {
         // Resolving here only saves the shim a round trip; its failure
         // is not fatal, because the digest that matters comes back in
         // the verdict either way.
-        let resolved = crate::ffi::resolved_digest_of(reference).ok();
+        let resolved = crate::oci::resolved_digest_of(reference).ok();
         let verdict = check_with(reference, resolved.as_deref(), &decision)?;
 
         // Under `enforce`, a pass with nothing to confirm against would

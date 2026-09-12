@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use clap::Args;
 
-use crate::ffi;
+use crate::oci;
 
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
@@ -61,7 +61,7 @@ pub fn run(args: &VerifyArgs) -> anyhow::Result<()> {
     }
 
     let report =
-        ffi::verify(&reference, "", &keys).with_context(|| format!("verify {reference}"))?;
+        oci::verify(&reference, "", &keys).with_context(|| format!("verify {reference}"))?;
 
     if args.json {
         println!(
@@ -81,7 +81,7 @@ pub fn run(args: &VerifyArgs) -> anyhow::Result<()> {
     }
 }
 
-fn print_human(report: &ffi::VerifyReport) {
+fn print_human(report: &oci::VerifyReport) {
     println!("Reference:  {}", report.reference);
     println!("Digest:     {}", report.digest);
     println!("Signatures: {}", report.signatures_found);
@@ -99,7 +99,7 @@ fn print_human(report: &ffi::VerifyReport) {
 }
 
 /// The `--json` shape. A separate serializable mirror of
-/// [`ffi::VerifyReport`] (which only deserializes, being the Go shim's
+/// [`oci::VerifyReport`] (which only deserializes, being the Go shim's
 /// output) so this command's own output format is defined here, where
 /// it's read, rather than being whatever the FFI type happens to be.
 #[derive(serde::Serialize)]
@@ -121,8 +121,8 @@ struct JsonMatch<'a> {
     identity: &'a str,
 }
 
-impl<'a> From<&'a ffi::VerifyReport> for JsonReport<'a> {
-    fn from(r: &'a ffi::VerifyReport) -> Self {
+impl<'a> From<&'a oci::VerifyReport> for JsonReport<'a> {
+    fn from(r: &'a oci::VerifyReport) -> Self {
         Self {
             reference: &r.reference,
             digest: &r.digest,

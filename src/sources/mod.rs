@@ -77,8 +77,8 @@ pub async fn pull(reference: &str, layout_dir: &Path, progress_key: &str) -> Res
 /// so this stages through disk, as `transferViaStaging` did.
 ///
 /// `changed` is always true on success, like `crate::hf::transfer`'s
-/// podman fallback: `ffi::push` doesn't report whether anything changed.
-pub async fn transfer(reference: &str, destination: &str) -> Result<crate::ffi::TransferOutcome> {
+/// podman fallback: `oci::push` doesn't report whether anything changed.
+pub async fn transfer(reference: &str, destination: &str) -> Result<crate::oci::TransferOutcome> {
     let tmp = std::env::temp_dir().join(format!(
         "llmman-source-transfer-{}-{}",
         std::process::id(),
@@ -97,7 +97,7 @@ pub async fn transfer(reference: &str, destination: &str) -> Result<crate::ffi::
     )
     .await
     .and_then(|()| {
-        crate::ffi::push(
+        crate::oci::push(
             tmp.to_str()
                 .context("temp layout path is not valid UTF-8")?,
             destination,
@@ -107,7 +107,7 @@ pub async fn transfer(reference: &str, destination: &str) -> Result<crate::ffi::
     // re-resolving the destination tag afterwards: this is the manifest
     // that was just pushed, so it is what `--sign-key` must sign.
     .and_then(|()| crate::hf::oci::read_manifest_ref(&tmp, destination))
-    .map(|desc| crate::ffi::TransferOutcome::new(true, desc.digest));
+    .map(|desc| crate::oci::TransferOutcome::new(true, desc.digest));
     let _ = std::fs::remove_dir_all(&tmp);
     result
 }

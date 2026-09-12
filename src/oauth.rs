@@ -8,7 +8,7 @@
 //! exchanging the resulting OAuth access token for a real Docker Hub
 //! Personal Access Token (PAT) — that PAT, plus the username decoded out
 //! of the access token's JWT claims, is what actually gets handed to
-//! `ffi::login` and stored as the registry credential, exactly like a
+//! `oci::login` and stored as the registry credential, exactly like a
 //! normal `-u`/`-p` login would. No separate storage format or
 //! verification step exists for this path.
 //!

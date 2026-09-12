@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::Args;
 
-use crate::ffi;
+use crate::oci;
 use crate::hf::ClassifiedRef;
 
 #[derive(Args, Debug)]
@@ -94,7 +94,7 @@ pub fn run(args: &TransferArgs) -> anyhow::Result<()> {
                     // nothing the transfer could contradict.
                     None => normalized.clone(),
                 };
-                let outcome = ffi::transfer(&pinned, &destination)?;
+                let outcome = oci::transfer(&pinned, &destination)?;
 
                 // Defence in depth on the verified path, where the pin
                 // makes it hold by construction. Unverified, there is no
@@ -146,7 +146,7 @@ pub fn run(args: &TransferArgs) -> anyhow::Result<()> {
         let key = key
             .to_str()
             .context("signing key path is not valid UTF-8")?;
-        let signed = ffi::sign(
+        let signed = oci::sign(
             &destination,
             digest,
             key,

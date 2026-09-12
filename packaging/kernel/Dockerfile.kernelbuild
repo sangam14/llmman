@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.4
+# Minimal Kernel BuildKit Pipeline for Firecracker vmlinux
+# Inspired by emirb/kernelbuild-buildkit and agentkernel
+
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    bc \
+    bison \
+    flex \
+    libelf-dev \
+    libssl-dev \
+    curl \
+    ca-certificates \
+    xz-utils \
+    cpio \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV KERNEL_VERSION=6.18.45
+
+WORKDIR /build
+RUN curl -sSL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz" | tar -xJ --strip-components=1
+
+COPY microvm.config .config
+RUN make olddefconfig
+
+RUN make -j$(nproc) vmlinux
+
+FROM scratch AS artifact
+COPY --from=builder /build/vmlinux /vmlinux
