@@ -71,7 +71,10 @@ pub fn inspect_remote(_reference: &str) -> anyhow::Result<String> {
 pub fn transfer(source: &str, destination: &str) -> anyhow::Result<TransferOutcome> {
     // TODO: Implement streaming transfer
     println!("Native OCI: transfer {} to {}", source, destination);
-    Ok(TransferOutcome::new(true, "sha256:0000000000000000000000000000000000000000000000000000000000000000"))
+    Ok(TransferOutcome::new(
+        true,
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    ))
 }
 
 pub fn verify(reference: &str, digest: &str, _keys: &[String]) -> Result<VerifyReport> {
@@ -100,7 +103,9 @@ pub fn sign(
 
 pub fn resolved_digest_of(_reference: &str) -> anyhow::Result<String> {
     // TODO: Implement HEAD request for digest
-    Ok(String::from("sha256:0000000000000000000000000000000000000000000000000000000000000000"))
+    Ok(String::from(
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    ))
 }
 
 #[derive(Deserialize, Serialize)]

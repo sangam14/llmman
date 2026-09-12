@@ -20,7 +20,7 @@ use crate::container::{ContainerEngine, ContainerManager};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lower")]
 pub enum Runtime {
-    /// Try `docker`, `podman`, `bin`, `path`, in that order.
+    /// Try `firecracker`, `bin`, `path`, in that order.
     Auto,
     /// Runs the Firecracker MicroVM runtime engine.
     Firecracker,
@@ -129,11 +129,7 @@ pub fn resolve_local(runtime: Runtime, llama_cpp_version: Option<&str>) -> Resul
 fn candidates(runtime: Runtime, local_only: bool) -> Vec<Runtime> {
     match runtime {
         Runtime::Auto if cfg!(target_os = "linux") && !local_only => {
-            vec![
-                Runtime::Firecracker,
-                Runtime::Bin,
-                Runtime::Path,
-            ]
+            vec![Runtime::Firecracker, Runtime::Bin, Runtime::Path]
         }
         Runtime::Auto => vec![Runtime::Bin, Runtime::Path],
         one => vec![one],
@@ -270,7 +266,10 @@ mod tests {
 
     #[test]
     fn only_container_runtimes_have_an_ociman() {
-        assert_eq!(Runtime::Firecracker.ociman(), Some(ContainerManager::Firecracker));
+        assert_eq!(
+            Runtime::Firecracker.ociman(),
+            Some(ContainerManager::Firecracker)
+        );
         assert_eq!(Runtime::Auto.ociman(), None);
         assert_eq!(Runtime::Bin.ociman(), None);
         assert_eq!(Runtime::Path.ociman(), None);

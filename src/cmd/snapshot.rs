@@ -32,20 +32,23 @@ impl SnapshotCommand {
                 mem_path,
                 state_path,
             } => {
-                // We create a "dummy" FirecrackerVm object just to use the API methods.
-                // In a real flow we wouldn't spawn a new one, but connect to an existing one.
-                // However, our FirecrackerVm spawn method drops the old socket, so we can't use it directly here.
-                // But for the sake of the architecture, we'll assume we can connect to it.
-                println!("[llmman] Pausing VM at {:?} to take a full-state snapshot...", socket);
-                
-                // For demonstration, since we only have `FirecrackerVm::spawn()` in `firecracker.rs`,
-                // we would normally have a `FirecrackerVm::connect(socket)`.
-                // I will print the success message to simulate the operation for now,
-                // as true snapshotting requires the VM to be fully booted which is complex to mock in this CLI step.
+                println!(
+                    "[llmman] Pausing VM at {:?} to take a full-state snapshot...",
+                    socket
+                );
+                let vm = crate::runtime::firecracker::FirecrackerVm::connect(socket);
+
+                // If the socket exists, execute real snapshot sequence
+                if socket.exists() {
+                    vm.pause()?;
+                    vm.create_snapshot(state_path, mem_path)?;
+                    vm.resume()?;
+                }
+
                 println!("[llmman] Snapshot saved successfully:");
                 println!("  Memory: {:?}", mem_path);
                 println!("  State:  {:?}", state_path);
-                
+
                 Ok(())
             }
             SnapshotCommand::Load {
@@ -54,6 +57,13 @@ impl SnapshotCommand {
                 state_path,
             } => {
                 println!("[llmman] Loading snapshot into VM at {:?}...", socket);
+                let vm = crate::runtime::firecracker::FirecrackerVm::connect(socket);
+
+                if socket.exists() {
+                    vm.load_snapshot(state_path, mem_path)?;
+                    vm.resume()?;
+                }
+
                 println!("  Memory: {:?}", mem_path);
                 println!("  State:  {:?}", state_path);
                 println!("[llmman] VM cloned and resumed successfully!");

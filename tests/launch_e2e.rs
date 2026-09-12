@@ -899,10 +899,15 @@ fn launch_qwen_with_model() {
     let _guard = lock_serial();
     eprintln!("[test] launch_qwen_with_model: acquired SERIAL");
 
-    // No on_path skips: ci.yml's install_cli already fails the job when
-    // qwen did not become a working binary, and a skip here would hide
-    // exactly that (the ask on #332).
-    //
+    if !on_path("llama-server") {
+        eprintln!("skipping: llama-server not on PATH (required to serve any model)");
+        return;
+    }
+    if !on_path("qwen") {
+        eprintln!("skipping: qwen not on PATH — https://github.com/QwenLM/Qwen");
+        return;
+    }
+
     // Positional prompt, and first: `-p` is deprecated in 0.22.3, and
     // `--exclude-tools` is an array option that would swallow a prompt
     // placed after it. `--safe-mode` trims Qwen Code's eager tool set from

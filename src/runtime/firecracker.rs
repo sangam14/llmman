@@ -23,7 +23,9 @@ impl FirecrackerVm {
             std::fs::remove_file(socket_path).ok();
         }
 
-        let process = if crate::find_on_path(bin_path.to_str().unwrap_or("")).is_some() || bin_path.exists() {
+        let process = if crate::find_on_path(bin_path.to_str().unwrap_or("")).is_some()
+            || bin_path.exists()
+        {
             Command::new(bin_path)
                 .arg("--api-sock")
                 .arg(socket_path)
@@ -59,6 +61,14 @@ impl FirecrackerVm {
         })
     }
 
+    /// Connects to an already running Firecracker VM without spawning a new process.
+    pub fn connect(socket_path: &Path) -> Self {
+        Self {
+            socket_path: socket_path.to_path_buf(),
+            process: None,
+        }
+    }
+
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
@@ -71,12 +81,15 @@ impl FirecrackerVm {
     fn put(&self, path: &str, body: &str) -> Result<()> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .context("Failed to connect to Firecracker API socket")?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
         let request = format!(
             "PUT {} HTTP/1.1\r\n\
              Host: localhost\r\n\
              Accept: application/json\r\n\
              Content-Type: application/json\r\n\
+             Connection: close\r\n\
              Content-Length: {}\r\n\
              \r\n\
              {}",
@@ -86,7 +99,7 @@ impl FirecrackerVm {
         );
 
         stream.write_all(request.as_bytes())?;
-        
+
         let mut response = String::new();
         stream.read_to_string(&mut response)?;
 
@@ -101,12 +114,15 @@ impl FirecrackerVm {
     fn patch(&self, path: &str, body: &str) -> Result<()> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .context("Failed to connect to Firecracker API socket")?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
         let request = format!(
             "PATCH {} HTTP/1.1\r\n\
              Host: localhost\r\n\
              Accept: application/json\r\n\
              Content-Type: application/json\r\n\
+             Connection: close\r\n\
              Content-Length: {}\r\n\
              \r\n\
              {}",
@@ -116,7 +132,7 @@ impl FirecrackerVm {
         );
 
         stream.write_all(request.as_bytes())?;
-        
+
         let mut response = String::new();
         stream.read_to_string(&mut response)?;
 
@@ -217,7 +233,12 @@ impl FirecrackerVm {
         self.put("/drives/rootfs", &body)
     }
 
-    pub fn add_network_interface(&self, iface_id: &str, host_dev_name: &str, mac: &str) -> Result<()> {
+    pub fn add_network_interface(
+        &self,
+        iface_id: &str,
+        host_dev_name: &str,
+        mac: &str,
+    ) -> Result<()> {
         let body = format!(
             r#"{{
                 "iface_id": "{}",
@@ -271,11 +292,12 @@ pub fn run_internal_daemon(socket_path: &Path) -> Result<()> {
                     if n > 0 {
                         let req = String::from_utf8_lossy(&buf[..n]);
                         let resp = if req.starts_with("GET /vm") {
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{\"state\": \"Running\"}"
+                            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{\"state\": \"Running\"}"
                         } else {
-                            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"
+                            "HTTP/1.1 204 No Content\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
                         };
                         let _ = s.write_all(resp.as_bytes());
+                        let _ = s.shutdown(std::net::Shutdown::Both);
                     }
                 }
             }
@@ -284,4 +306,3 @@ pub fn run_internal_daemon(socket_path: &Path) -> Result<()> {
     }
     Ok(())
 }
-

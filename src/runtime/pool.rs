@@ -37,8 +37,11 @@ impl VmPool {
             attempts += 1;
             let id = uuid_or_nanos();
             let socket_path = self.socket_dir.join(format!("fc-pool-{}.sock", id));
-            
-            if self.bin_path.exists() || self.bin_path == std::path::Path::new("firecracker") {
+
+            let can_run = crate::find_on_path(self.bin_path.to_str().unwrap_or("")).is_some()
+                || self.bin_path.exists()
+                || self.bin_path == std::path::Path::new("firecracker");
+            if can_run {
                 if let Ok(vm) = FirecrackerVm::spawn(&self.bin_path, &socket_path) {
                     pool_lock.push_back(vm);
                 }
@@ -64,7 +67,10 @@ impl VmPool {
                 let mut attempts = 0;
                 while lock.len() < target_size && attempts < target_size {
                     attempts += 1;
-                    if bin_path.exists() || bin_path == std::path::Path::new("firecracker") {
+                    let can_run = crate::find_on_path(bin_path.to_str().unwrap_or("")).is_some()
+                        || bin_path.exists()
+                        || bin_path == std::path::Path::new("firecracker");
+                    if can_run {
                         let id = uuid_or_nanos();
                         let socket_path = socket_dir.join(format!("fc-pool-{}.sock", id));
                         if let Ok(vm) = FirecrackerVm::spawn(&bin_path, &socket_path) {
@@ -103,8 +109,12 @@ mod tests {
     #[tokio::test]
     async fn test_vm_pool_initialization() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pool = VmPool::new(3, PathBuf::from("/nonexistent/firecracker"), temp_dir.path().to_path_buf());
-        
+        let pool = VmPool::new(
+            3,
+            PathBuf::from("/nonexistent/firecracker"),
+            temp_dir.path().to_path_buf(),
+        );
+
         assert_eq!(pool.len().await, 0);
         assert!(pool.is_empty().await);
     }
@@ -112,8 +122,12 @@ mod tests {
     #[tokio::test]
     async fn test_vm_pool_acquire_empty() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pool = VmPool::new(3, PathBuf::from("/nonexistent/firecracker"), temp_dir.path().to_path_buf());
-        
+        let pool = VmPool::new(
+            3,
+            PathBuf::from("/nonexistent/firecracker"),
+            temp_dir.path().to_path_buf(),
+        );
+
         let acquired = pool.acquire().await.unwrap();
         assert!(acquired.is_none());
     }
@@ -121,8 +135,12 @@ mod tests {
     #[tokio::test]
     async fn test_vm_pool_warm_nonexistent_binary() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pool = VmPool::new(3, PathBuf::from("/nonexistent/firecracker"), temp_dir.path().to_path_buf());
-        
+        let pool = VmPool::new(
+            3,
+            PathBuf::from("/nonexistent/firecracker"),
+            temp_dir.path().to_path_buf(),
+        );
+
         pool.warm().await.unwrap();
         assert_eq!(pool.len().await, 0);
     }

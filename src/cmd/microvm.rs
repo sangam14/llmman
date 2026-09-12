@@ -106,7 +106,13 @@ fn load_active_vms() -> Vec<MicrovmRecord> {
 fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        unsafe {
+            if libc::kill(pid as i32, 0) == 0 {
+                true
+            } else {
+                std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+            }
+        }
     }
     #[cfg(not(unix))]
     {
@@ -123,9 +129,7 @@ pub async fn run(args: &MicrovmArgs) -> Result<()> {
             memory_mb,
             model,
             detach,
-        }) => {
-            boot_microvm(kernel, *rootfs_size_mb, *vcpus, *memory_mb, model, *detach).await
-        }
+        }) => boot_microvm(kernel, *rootfs_size_mb, *vcpus, *memory_mb, model, *detach).await,
         Some(MicrovmCommand::Ps) | None => {
             list_microvms();
             Ok(())
@@ -155,11 +159,12 @@ async fn boot_microvm(
     let rootfs_path = temp_dir.path().join("rootfs.ext4");
 
     println!("\x1b[1;36m[llmman]\x1b[0m Initializing Firecracker MicroVM Execution Environment...");
-    
+
     // 1. Kernel Resolution
     let kernel_path = if kernel.exists() {
         kernel.to_path_buf()
-    } else if Path::new("/Users/apple/llmman/packaging/kernel/vmlinux-6.18.45-agentkernel").exists() {
+    } else if Path::new("/Users/apple/llmman/packaging/kernel/vmlinux-6.18.45-agentkernel").exists()
+    {
         PathBuf::from("/Users/apple/llmman/packaging/kernel/vmlinux-6.18.45-agentkernel")
     } else if Path::new("/tmp/llmman-kernel/vmlinux-6.18.45-agentkernel").exists() {
         PathBuf::from("/tmp/llmman-kernel/vmlinux-6.18.45-agentkernel")
@@ -167,7 +172,11 @@ async fn boot_microvm(
         PathBuf::from("/tmp/llmman-kernel/vmlinux")
     };
     let kernel_ver = "Linux 6.18.45-agentkernel (AgentKernel VirtIO Minimal)";
-    println!("\x1b[1;32m[kernel]\x1b[0m Image: {} [{}]", kernel_path.display(), kernel_ver);
+    println!(
+        "\x1b[1;32m[kernel]\x1b[0m Image: {} [{}]",
+        kernel_path.display(),
+        kernel_ver
+    );
 
     // 2. ext4 Rootfs Generation
     rootfs::create_ext4_rootfs(Path::new("/tmp"), &rootfs_path, rootfs_size_mb)?;
@@ -178,37 +187,61 @@ async fn boot_microvm(
     let guest_mac = "06:00:00:00:00:01";
 
     // 4. Pre-Warmed Pool Check
-    println!("\x1b[1;35m[pool]\x1b[0m Checking VmPool (warm capacity: 3 instances, SLA < 100ms)...");
-    let vm_pool = pool::VmPool::new(3, Path::new("firecracker").to_path_buf(), temp_dir.path().to_path_buf());
+    println!(
+        "\x1b[1;35m[pool]\x1b[0m Checking VmPool (warm capacity: 3 instances, SLA < 100ms)..."
+    );
+    let vm_pool = pool::VmPool::new(
+        3,
+        Path::new("firecracker").to_path_buf(),
+        temp_dir.path().to_path_buf(),
+    );
     let (fc, from_pool) = match vm_pool.acquire().await {
         Ok(Some(vm)) => {
-            println!("\x1b[1;32m[pool]\x1b[0m Acquired pre-warmed Firecracker instance from VmPool!");
+            println!(
+                "\x1b[1;32m[pool]\x1b[0m Acquired pre-warmed Firecracker instance from VmPool!"
+            );
             (vm, true)
         }
         _ => {
-            println!("\x1b[1;34m[firecracker]\x1b[0m Spawning fresh microVM process (Socket: {})...", socket_path.display());
-            (firecracker::FirecrackerVm::spawn(Path::new("firecracker"), &socket_path)?, false)
+            println!(
+                "\x1b[1;34m[firecracker]\x1b[0m Spawning fresh microVM process (Socket: {})...",
+                socket_path.display()
+            );
+            (
+                firecracker::FirecrackerVm::spawn(Path::new("firecracker"), &socket_path)?,
+                false,
+            )
         }
     };
 
     // 5. REST API Socket Configuration (AgentKernel Minimal Spec)
-    println!("\x1b[1;34m[firecracker]\x1b[0m Configuring Machine Config (vCPUs: {}, Mem: {} MiB)...", vcpus, memory_mb);
+    println!(
+        "\x1b[1;34m[firecracker]\x1b[0m Configuring Machine Config (vCPUs: {}, Mem: {} MiB)...",
+        vcpus, memory_mb
+    );
     fc.set_machine_config(vcpus, memory_mb)?;
 
     println!("\x1b[1;34m[firecracker]\x1b[0m Configuring Boot Source via Unix socket...");
     let cmdline = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init quiet loglevel=4 i8042.nokbd i8042.noaux";
     fc.set_boot_source(&kernel_path, cmdline)?;
 
-    println!("\x1b[1;34m[firecracker]\x1b[0m Attaching VirtIO-Blk root drive: {}", rootfs_path.display());
+    println!(
+        "\x1b[1;34m[firecracker]\x1b[0m Attaching VirtIO-Blk root drive: {}",
+        rootfs_path.display()
+    );
     fc.set_rootfs(&rootfs_path, true)?;
 
-    println!("\x1b[1;34m[firecracker]\x1b[0m Configuring VirtIO-Net (TAP: {}, MAC: {})...", tap_name, guest_mac);
+    println!(
+        "\x1b[1;34m[firecracker]\x1b[0m Configuring VirtIO-Net (TAP: {}, MAC: {})...",
+        tap_name, guest_mac
+    );
     fc.add_network_interface("eth0", &tap_name, guest_mac)?;
 
     println!("\x1b[1;34m[firecracker]\x1b[0m Dispatching Action: InstanceStart...");
     fc.start()?;
 
     let pid = fc.pid().unwrap_or(std::process::id());
+    let active_socket = fc.socket_path().to_path_buf();
 
     // Record the VM
     let record = MicrovmRecord {
@@ -222,7 +255,7 @@ async fn boot_microvm(
         tap: tap_name.clone(),
         model: model.to_string(),
         started_at: chrono::Utc::now().to_rfc3339(),
-        socket_path: socket_path.display().to_string(),
+        socket_path: active_socket.display().to_string(),
     };
     save_vm_record(&record)?;
 
@@ -235,12 +268,28 @@ async fn boot_microvm(
     println!("[    0.000000] Command line: console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init quiet loglevel=4 i8042.nokbd i8042.noaux");
     println!("[    0.000000] BIOS-provided physical RAM map:");
     println!("[    0.000000]  BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable");
-    println!("[    0.000000]  BIOS-e820: [mem 0x0000000000100000-0x0000000200000000] usable ({} MB)", memory_mb);
-    println!("[    0.004120] smpboot: Allowing {} CPUs, 0 hotplug CPUs", vcpus);
-    println!("[    0.010450] setup_percpu: NR_CPUS:{} nr_cpumask_bits:{} nr_cpu_ids:{} nr_node_ids:1", vcpus, vcpus, vcpus);
+    println!(
+        "[    0.000000]  BIOS-e820: [mem 0x0000000000100000-0x0000000200000000] usable ({} MB)",
+        memory_mb
+    );
+    println!(
+        "[    0.004120] smpboot: Allowing {} CPUs, 0 hotplug CPUs",
+        vcpus
+    );
+    println!(
+        "[    0.010450] setup_percpu: NR_CPUS:{} nr_cpumask_bits:{} nr_cpu_ids:{} nr_node_ids:1",
+        vcpus, vcpus, vcpus
+    );
     println!("[    0.018230] virtio-mmio: registered 3 virtio-mmio devices");
-    println!("[    0.024100] virtio_blk virtio0: [vda] {} 512-byte logical blocks ({} MB)", rootfs_size_mb * 2048, rootfs_size_mb);
-    println!("[    0.029800] virtio_net virtio1 eth0: MAC {} (Host TAP: {}, IP: {}/24)", guest_mac, tap_name, guest_ip);
+    println!(
+        "[    0.024100] virtio_blk virtio0: [vda] {} 512-byte logical blocks ({} MB)",
+        rootfs_size_mb * 2048,
+        rootfs_size_mb
+    );
+    println!(
+        "[    0.029800] virtio_net virtio1 eth0: MAC {} (Host TAP: {}, IP: {}/24)",
+        guest_mac, tap_name, guest_ip
+    );
     println!("[    0.038100] VFS: Mounted root (ext4 filesystem) on device /dev/vda.");
     println!("[    0.042300] Freeing unused kernel image (initmem) memory: 1024K");
     println!("[    0.051000] Run /init as init process");
@@ -254,9 +303,19 @@ async fn boot_microvm(
     println!("  \x1b[1mKERNEL:\x1b[0m       Linux 6.18.45-agentkernel");
     println!("  \x1b[1mvCPUs:\x1b[0m        {}", vcpus);
     println!("  \x1b[1mMEMORY:\x1b[0m       {} MB", memory_mb);
-    println!("  \x1b[1mNETWORK:\x1b[0m      eth0 ({} -> host {})", guest_ip, tap_name);
+    println!(
+        "  \x1b[1mNETWORK:\x1b[0m      eth0 ({} -> host {})",
+        guest_ip, tap_name
+    );
     println!("  \x1b[1mWORKLOAD:\x1b[0m     {}", model);
-    println!("  \x1b[1mSOURCE:\x1b[0m       {}", if from_pool { "Pre-warmed VmPool (<100ms)" } else { "Cold-booted Firecracker" });
+    println!(
+        "  \x1b[1mSOURCE:\x1b[0m       {}",
+        if from_pool {
+            "Pre-warmed VmPool (<100ms)"
+        } else {
+            "Cold-booted Firecracker"
+        }
+    );
     println!("  \x1b[1mAPI SOCKET:\x1b[0m   {}", socket_path.display());
 
     if !detach {
@@ -284,18 +343,47 @@ async fn boot_microvm(
 fn list_microvms() {
     let vms = load_active_vms();
 
-    println!("\x1b[1m{:<14} {:<8} {:<10} {:<6} {:<10} {:<15} {:<14} {:<24}\x1b[0m", 
-        "VM ID", "PID", "STATUS", "VCPU", "MEMORY", "IP ADDRESS", "KERNEL", "MODEL / WORKLOAD");
+    println!(
+        "\x1b[1m{:<14} {:<8} {:<10} {:<6} {:<10} {:<15} {:<14} {:<24}\x1b[0m",
+        "VM ID", "PID", "STATUS", "VCPU", "MEMORY", "IP ADDRESS", "KERNEL", "MODEL / WORKLOAD"
+    );
     println!("{:-<105}", "");
 
     if vms.is_empty() {
         // If no standalone CLI microVM is active, also display sample registered active node VMs
-        println!("{:<14} {:<8} \x1b[1;32m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
-            "vm-01h8x9a", "28410", "RUNNING", "4", "8192 MB", "172.16.0.2", "6.18.45-agentkernel", "llama-3-8b-instruct");
-        println!("{:<14} {:<8} \x1b[1;32m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
-            "vm-01h8x9b", "28412", "RUNNING", "4", "8192 MB", "172.16.0.3", "6.18.45-agentkernel", "vllm-deepseek-coder");
-        println!("{:<14} {:<8} \x1b[1;33m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
-            "vm-01h8x9c", "28415", "PAUSED", "2", "4096 MB", "172.16.0.4", "6.18.45-agentkernel", "qwen-2.5-7b");
+        println!(
+            "{:<14} {:<8} \x1b[1;32m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
+            "vm-01h8x9a",
+            "28410",
+            "RUNNING",
+            "4",
+            "8192 MB",
+            "172.16.0.2",
+            "6.18.45-agentkernel",
+            "llama-3-8b-instruct"
+        );
+        println!(
+            "{:<14} {:<8} \x1b[1;32m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
+            "vm-01h8x9b",
+            "28412",
+            "RUNNING",
+            "4",
+            "8192 MB",
+            "172.16.0.3",
+            "6.18.45-agentkernel",
+            "vllm-deepseek-coder"
+        );
+        println!(
+            "{:<14} {:<8} \x1b[1;33m{:<10}\x1b[0m {:<6} {:<10} {:<15} {:<14} {:<24}",
+            "vm-01h8x9c",
+            "28415",
+            "PAUSED",
+            "2",
+            "4096 MB",
+            "172.16.0.4",
+            "6.18.45-agentkernel",
+            "qwen-2.5-7b"
+        );
     } else {
         for vm in vms {
             let (color_start, color_end) = if vm.status == "RUNNING" {
@@ -303,15 +391,30 @@ fn list_microvms() {
             } else {
                 ("\x1b[1;33m", "\x1b[0m")
             };
-            println!("{:<14} {:<8} {}{:<10}{} {:<6} {:<10} {:<15} {:<14} {:<24}",
-                vm.id, vm.pid, color_start, vm.status, color_end, vm.vcpus, format!("{} MB", vm.memory_mb), vm.ip, vm.kernel, vm.model);
+            println!(
+                "{:<14} {:<8} {}{:<10}{} {:<6} {:<10} {:<15} {:<14} {:<24}",
+                vm.id,
+                vm.pid,
+                color_start,
+                vm.status,
+                color_end,
+                vm.vcpus,
+                format!("{} MB", vm.memory_mb),
+                vm.ip,
+                vm.kernel,
+                vm.model
+            );
         }
     }
 }
 
 async fn show_vm_pool() {
     let temp_dir = tempfile::tempdir().unwrap_or_else(|_| panic!("tempdir"));
-    let pool = pool::VmPool::new(3, PathBuf::from("firecracker"), temp_dir.path().to_path_buf());
+    let pool = pool::VmPool::new(
+        3,
+        PathBuf::from("firecracker"),
+        temp_dir.path().to_path_buf(),
+    );
     let _ = pool.warm().await;
 
     println!("\x1b[1;35mPre-Warmed MicroVM Pool (VmPool Status):\x1b[0m");
@@ -333,7 +436,18 @@ fn stop_microvm(vm_id: &str) {
                 unsafe {
                     libc::kill(record.pid as i32, libc::SIGTERM);
                 }
-                println!("[llmman] MicroVM {} (PID {}) terminated.", vm_id, record.pid);
+                if !record.tap.is_empty() {
+                    let _ = cni::teardown_cni_network(
+                        &record.id,
+                        Path::new("/tmp"),
+                        "eth0",
+                        &record.tap,
+                    );
+                }
+                println!(
+                    "[llmman] MicroVM {} (PID {}) terminated.",
+                    vm_id, record.pid
+                );
             }
         }
         let _ = std::fs::remove_file(file_path);

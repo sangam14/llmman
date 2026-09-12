@@ -11,7 +11,6 @@
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
-    use std::ffi::CString;
     use std::process::Command;
 
     println!("[init] Booting llmman MicroVM...");
@@ -42,7 +41,7 @@ fn main() -> anyhow::Result<()> {
     // Since this is a simple init, we wait for the main child to exit,
     // and periodically reap others (though Command::spawn handles its own child).
     // A true PID 1 would use `waitpid(-1, ...)` in a loop.
-    
+
     // For CNCF robustness, we do a proper waitpid loop:
     loop {
         let status = unsafe { libc::waitpid(-1, std::ptr::null_mut(), 0) };
@@ -72,7 +71,7 @@ fn main() -> anyhow::Result<()> {
 fn mount_fs() -> anyhow::Result<()> {
     use std::ffi::CString;
     println!("[init] Mounting virtual filesystems...");
-    
+
     let mounts = [
         ("proc", "/proc", "proc"),
         ("sysfs", "/sys", "sysfs"),
@@ -81,7 +80,7 @@ fn mount_fs() -> anyhow::Result<()> {
 
     for (src, target, fs_type) in mounts {
         std::fs::create_dir_all(target).ok(); // Ignore errors if it exists
-        
+
         let c_src = CString::new(src).unwrap();
         let c_target = CString::new(target).unwrap();
         let c_type = CString::new(fs_type).unwrap();
@@ -113,10 +112,14 @@ fn configure_network() -> anyhow::Result<()> {
     // A quick hack to bring up loopback and eth0 using 'ip' or 'ifconfig'.
     // In a fully native Rust init, we would use netlink sockets (e.g. via `rtnetlink` crate),
     // but spawning `ip` is sufficient if the rootfs has iproute2.
-    
-    let _ = Command::new("ip").args(["link", "set", "lo", "up"]).status();
-    let _ = Command::new("ip").args(["link", "set", "eth0", "up"]).status();
-    
+
+    let _ = Command::new("ip")
+        .args(["link", "set", "lo", "up"])
+        .status();
+    let _ = Command::new("ip")
+        .args(["link", "set", "eth0", "up"])
+        .status();
+
     Ok(())
 }
 

@@ -30,7 +30,6 @@ pub async fn transfer(reference: &str, destination: &str) -> Result<TransferOutc
 /// always true on success — `oci::push` (podman's `copy.Image`) doesn't
 /// report whether the destination actually changed, unlike the docker
 /// path's real per-blob answer.
-
 async fn via_temp_pull(reference: &str, destination: &str) -> Result<TransferOutcome> {
     let tmp = std::env::temp_dir().join(format!(
         "llmman-hf-transfer-{}-{}",
@@ -67,4 +66,3 @@ fn rand_suffix() -> u64 {
         .unwrap()
         .as_nanos() as u64
 }
-

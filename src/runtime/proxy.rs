@@ -19,6 +19,7 @@ pub struct ProviderConfig {
     pub name: String,
     pub domain: String,
     pub token_format: TokenFormat,
+    pub header_name: String,
     pub auth_header_prefix: String,
 }
 
@@ -30,13 +31,14 @@ pub struct SecretProxy {
 impl SecretProxy {
     pub fn new() -> Self {
         let mut providers = HashMap::new();
-        
+
         providers.insert(
             "api.openai.com".to_string(),
             ProviderConfig {
                 name: "openai".to_string(),
                 domain: "api.openai.com".to_string(),
                 token_format: TokenFormat::OpenAi,
+                header_name: "Authorization".to_string(),
                 auth_header_prefix: "Bearer ".to_string(),
             },
         );
@@ -47,7 +49,8 @@ impl SecretProxy {
                 name: "anthropic".to_string(),
                 domain: "api.anthropic.com".to_string(),
                 token_format: TokenFormat::Anthropic,
-                auth_header_prefix: "x-api-key: ".to_string(),
+                header_name: "x-api-key".to_string(),
+                auth_header_prefix: "".to_string(),
             },
         );
 
@@ -57,6 +60,7 @@ impl SecretProxy {
                 name: "huggingface".to_string(),
                 domain: "huggingface.co".to_string(),
                 token_format: TokenFormat::HuggingFace,
+                header_name: "Authorization".to_string(),
                 auth_header_prefix: "Bearer ".to_string(),
             },
         );
@@ -69,7 +73,8 @@ impl SecretProxy {
 
     /// Register a host secret for a given provider name (e.g. "openai" -> "sk-proj-...").
     pub fn set_secret(&mut self, provider_name: &str, secret: &str) {
-        self.secrets.insert(provider_name.to_string(), secret.to_string());
+        self.secrets
+            .insert(provider_name.to_string(), secret.to_string());
     }
 
     /// Lookup provider by request domain/host header.
@@ -83,6 +88,16 @@ impl SecretProxy {
         let provider = self.lookup_provider(host)?;
         let secret = self.secrets.get(&provider.name)?;
         Some(format!("{}{}", provider.auth_header_prefix, secret))
+    }
+
+    /// Returns the (header_name, header_value) pair for a target domain.
+    pub fn inject_auth_header_pair<'a>(&'a self, host: &str) -> Option<(&'a str, String)> {
+        let provider = self.lookup_provider(host)?;
+        let secret = self.secrets.get(&provider.name)?;
+        Some((
+            &provider.header_name,
+            format!("{}{}", provider.auth_header_prefix, secret),
+        ))
     }
 
     /// Parse token usage metrics from an LLM API JSON response body.
@@ -156,15 +171,20 @@ mod tests {
     fn test_secret_injection() {
         let mut proxy = SecretProxy::new();
         proxy.set_secret("openai", "sk-test-key-12345");
+        proxy.set_secret("anthropic", "ant-api-key-67890");
 
         let header = proxy.inject_auth_header("api.openai.com");
         assert_eq!(header, Some("Bearer sk-test-key-12345".to_string()));
+
+        let pair = proxy.inject_auth_header_pair("api.anthropic.com");
+        assert_eq!(pair, Some(("x-api-key", "ant-api-key-67890".to_string())));
     }
 
     #[test]
     fn test_openai_token_extraction() {
         let proxy = SecretProxy::new();
-        let json_body = br#"{"usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}}"#;
+        let json_body =
+            br#"{"usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}}"#;
 
         let usage = proxy.extract_token_usage("api.openai.com", json_body);
         assert_eq!(
@@ -173,6 +193,22 @@ mod tests {
                 input_tokens: 12,
                 output_tokens: 8,
                 total_tokens: 20
+            })
+        );
+    }
+
+    #[test]
+    fn test_anthropic_token_extraction() {
+        let proxy = SecretProxy::new();
+        let json_body = br#"{"usage": {"input_tokens": 25, "output_tokens": 15}}"#;
+
+        let usage = proxy.extract_token_usage("api.anthropic.com", json_body);
+        assert_eq!(
+            usage,
+            Some(TokenUsage {
+                input_tokens: 25,
+                output_tokens: 15,
+                total_tokens: 40
             })
         );
     }

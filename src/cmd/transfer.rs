@@ -1,8 +1,8 @@
 use anyhow::Context;
 use clap::Args;
 
-use crate::oci;
 use crate::hf::ClassifiedRef;
+use crate::oci;
 
 #[derive(Args, Debug)]
 pub struct TransferArgs {
