@@ -7,40 +7,114 @@ defmodule Dashboard.ClusterClient do
   @default_brigade_url "http://localhost:9600"
 
   def get_cluster_status(url \\ @default_brigade_url) do
-    base_data =
-      case Req.get("#{url}/status", retry: false) do
-        {:ok, %{status: 200, body: body}} when is_map(body) -> body
-        _ -> simulated_status()
-      end
+    case Req.get("#{url}/status", retry: false) do
+      {:ok, %{status: 200, body: body}} when is_map(body) ->
+        local_vms = read_local_llmman_vms()
 
-    # Read live local Firecracker MicroVM records
+        merged_vms =
+          if Enum.empty?(local_vms) do
+            body["vms"] || []
+          else
+            local_vms ++
+              Enum.reject(body["vms"] || [], fn vm ->
+                Enum.any?(local_vms, &(&1["uid"] == vm["uid"]))
+              end)
+          end
+
+        total_vcpus = Enum.reduce(body["hosts"] || [], 0, fn h, acc -> acc + (h["vcpus"] || 0) end)
+        used_vcpus = Enum.reduce(merged_vms, 0, fn vm, acc -> acc + (if vm["status"] == "running", do: vm["vcpus"] || 0, else: 0) end)
+        total_mem = Enum.reduce(body["hosts"] || [], 0, fn h, acc -> acc + (h["memory_mb"] || 0) end)
+        used_mem = Enum.reduce(merged_vms, 0, fn vm, acc -> acc + (if vm["status"] == "running", do: vm["memory_mb"] || 0, else: 0) end)
+
+        data =
+          body
+          |> Map.put("vms", merged_vms)
+          |> Map.put("total_vcpus", total_vcpus)
+          |> Map.put("used_vcpus", used_vcpus)
+          |> Map.put("total_mem_mb", total_mem)
+          |> Map.put("used_mem_mb", used_mem)
+
+        {:ok, data}
+
+      _ ->
+        {:ok, real_system_status()}
+    end
+  end
+
+  def real_system_status do
     local_vms = read_local_llmman_vms()
+    hostname = detect_hostname()
+    total_vcpus = :erlang.system_info(:logical_processors_online)
+    total_mem_mb = detect_total_memory_mb()
+    host_ip = detect_host_ip()
+    arch = detect_architecture()
 
-    # Combine local active VMs with cluster VMs
-    merged_vms =
-      if Enum.empty?(local_vms) do
-        base_data["vms"]
-      else
-        local_vms ++ Enum.reject(base_data["vms"], fn vm ->
-          Enum.any?(local_vms, &(&1["uid"] == vm["uid"]))
+    used_vcpus =
+      Enum.reduce(local_vms, 0, fn vm, acc ->
+        acc + (if vm["status"] == "running", do: vm["vcpus"] || 0, else: 0)
+      end)
+
+    used_mem_mb =
+      Enum.reduce(local_vms, 0, fn vm, acc ->
+        acc + (if vm["status"] == "running", do: vm["memory_mb"] || 0, else: 0)
+      end)
+
+    host = %{
+      "id" => hostname,
+      "status" => "online",
+      "vcpus" => total_vcpus,
+      "vcpus_used" => used_vcpus,
+      "memory_mb" => total_mem_mb,
+      "memory_mb_used" => used_mem_mb,
+      "active_vms" => length(local_vms),
+      "warm_pool" => 0,
+      "ip" => host_ip,
+      "arch" => arch
+    }
+
+    cluster = %{
+      "name" => "llmman-#{hostname}",
+      "quorum" => true,
+      "nodes_online" => 1,
+      "min_size" => 1,
+      "network" => "Host Network (#{host_ip})",
+      "consensus" => "Local Host Engine (#{arch})"
+    }
+
+    events = [
+      %{
+        "time" => time_now(),
+        "type" => "SYSTEM",
+        "msg" => "Host #{hostname} online (#{total_vcpus} vCPUs, #{round(total_mem_mb / 1024)} GB RAM, #{arch})"
+      }
+      | Enum.map(local_vms, fn vm ->
+          %{
+            "time" => time_now(),
+            "type" => "VM",
+            "msg" => "MicroVM #{vm["uid"]} (#{vm["name"]}) active on PID #{vm["pid"]}"
+          }
         end)
-      end
+    ]
 
-    # Calculate live resource utilization
-    total_vcpus = Enum.reduce(base_data["hosts"], 0, fn h, acc -> acc + (h["vcpus"] || 0) end)
-    used_vcpus = Enum.reduce(merged_vms, 0, fn vm, acc -> acc + (if vm["status"] == "running", do: vm["vcpus"] || 0, else: 0) end)
-    total_mem = Enum.reduce(base_data["hosts"], 0, fn h, acc -> acc + (h["memory_mb"] || 0) end)
-    used_mem = Enum.reduce(merged_vms, 0, fn vm, acc -> acc + (if vm["status"] == "running", do: vm["memory_mb"] || 0, else: 0) end)
-
-    data =
-      base_data
-      |> Map.put("vms", merged_vms)
-      |> Map.put("total_vcpus", total_vcpus)
-      |> Map.put("used_vcpus", used_vcpus)
-      |> Map.put("total_mem_mb", total_mem)
-      |> Map.put("used_mem_mb", used_mem)
-
-    {:ok, data}
+    %{
+      "cluster" => cluster,
+      "hosts" => [host],
+      "vms" => local_vms,
+      "snapshots" => read_local_snapshots(),
+      "proxy" => %{
+        "tokens_processed" => 0,
+        "requests_proxied" => 0,
+        "spend_usd" => 0.0,
+        "budget_limit_usd" => 0.0,
+        "active_keys" => detect_active_keys(),
+        "rate_limit_status" => "Normal"
+      },
+      "events" => events,
+      "total_vcpus" => total_vcpus,
+      "used_vcpus" => used_vcpus,
+      "total_mem_mb" => total_mem_mb,
+      "used_mem_mb" => used_mem_mb
+    }
   end
 
   def read_local_llmman_vms do
@@ -49,6 +123,8 @@ defmodule Dashboard.ClusterClient do
       Path.expand("~/.local/share/llmman/vms"),
       "/tmp/llmman/vms"
     ]
+
+    hostname = detect_hostname()
 
     Enum.find_value(dirs, [], fn dir ->
       if File.dir?(dir) do
@@ -66,7 +142,7 @@ defmodule Dashboard.ClusterClient do
               %{
                 "uid" => data["id"],
                 "name" => data["model"] || "microvm",
-                "host" => "node-alpha",
+                "host" => hostname,
                 "pid" => pid,
                 "vcpus" => data["vcpus"] || 4,
                 "memory_mb" => data["memory_mb"] || 8192,
@@ -97,6 +173,122 @@ defmodule Dashboard.ClusterClient do
     _ -> true
   end
   defp is_pid_alive?(_), do: true
+
+  defp detect_hostname do
+    case System.cmd("hostname", ["-s"]) do
+      {name, 0} -> String.trim(name)
+      _ -> "localhost"
+    end
+  rescue
+    _ -> "localhost"
+  end
+
+  defp detect_total_memory_mb do
+    case System.cmd("sysctl", ["-n", "hw.memsize"]) do
+      {val, 0} ->
+        case Integer.parse(String.trim(val)) do
+          {bytes, ""} -> div(bytes, 1024 * 1024)
+          _ -> 16384
+        end
+      _ ->
+        16384
+    end
+  rescue
+    _ -> 16384
+  end
+
+  defp detect_host_ip do
+    case :inet.getifaddrs() do
+      {:ok, ifaddrs} ->
+        Enum.find_value(ifaddrs, "127.0.0.1", fn {_name, opts} ->
+          flags = Keyword.get(opts, :flags, [])
+          if :up in flags and :loopback not in flags do
+            addrs =
+              Keyword.get_values(opts, :addr)
+              |> Enum.filter(&(is_tuple(&1) and tuple_size(&1) == 4))
+
+            case addrs do
+              [first | _] -> :inet.ntoa(first) |> to_string()
+              _ -> nil
+            end
+          else
+            nil
+          end
+        end)
+      _ ->
+        "127.0.0.1"
+    end
+  rescue
+    _ -> "127.0.0.1"
+  end
+
+  defp detect_architecture do
+    os =
+      case :os.type() do
+        {:unix, :darwin} -> "macOS"
+        {:unix, :linux} -> "Linux"
+        {:win32, _} -> "Windows"
+        other -> inspect(other)
+      end
+
+    arch =
+      case System.cmd("uname", ["-m"]) do
+        {m, 0} -> String.trim(m)
+        _ -> to_string(:erlang.system_info(:system_architecture))
+      end
+
+    "#{os} #{arch}"
+  rescue
+    _ -> "Darwin arm64"
+  end
+
+  defp detect_active_keys do
+    ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN"]
+    |> Enum.filter(fn k ->
+      case System.get_env(k) do
+        nil -> false
+        "" -> false
+        _ -> true
+      end
+    end)
+  end
+
+  defp read_local_snapshots do
+    dirs = [
+      Path.expand("~/Library/Application Support/llmman/snapshots"),
+      Path.expand("~/.local/share/llmman/snapshots"),
+      "/tmp/llmman/snapshots"
+    ]
+
+    Enum.find_value(dirs, [], fn dir ->
+      if File.dir?(dir) do
+        dir
+        |> File.ls!()
+        |> Enum.filter(&String.ends_with?(&1, ".json"))
+        |> Enum.map(fn file ->
+          with {:ok, content} <- File.read(Path.join(dir, file)),
+               {:ok, data} <- Jason.decode(content) do
+            %{
+              "name" => data["name"] || file,
+              "vm" => data["vm_id"] || data["vm"] || "microvm",
+              "size_mb" => data["size_mb"] || 8192,
+              "created_at" => data["created_at"] || DateTime.utc_now() |> DateTime.to_iso8601(),
+              "status" => data["status"] || "ready"
+            }
+          else
+            _ -> nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+      end
+    end) || []
+  rescue
+    _ -> []
+  end
+
+  defp time_now do
+    Calendar.strftime(DateTime.utc_now(), "%H:%M:%S")
+  end
 
   def simulated_status do
     %{

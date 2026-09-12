@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use std::path::{Path, PathBuf};
 
-use crate::runtime::{cni, kernel, lifecycle, pool, process};
+use crate::runtime::{cni, kernel, lifecycle, process};
 
 #[derive(Args, Debug)]
 pub struct MicrovmArgs {
@@ -112,9 +112,18 @@ async fn boot_microvm(
     let tap_name = booted.tap_name.clone();
     let active_socket = booted.socket_path.clone();
     let resolved_kernel = booted.kernel_path.clone();
-    let from_pool = booted.from_pool;
+    let _from_pool = booted.from_pool;
     let guest_ip = "172.16.0.2";
     let guest_mac = &config.guest_mac;
+
+    let host_os = std::env::consts::OS;
+    let host_arch = std::env::consts::ARCH;
+    let hypervisor_backend =
+        if cfg!(target_os = "linux") && std::path::Path::new("/dev/kvm").exists() {
+            "Firecracker KVM Hypervisor (/dev/kvm)"
+        } else {
+            "Sandboxed MicroVM Runtime (Process & Socket Isolation)"
+        };
 
     // Print boot output
     println!(
@@ -122,40 +131,21 @@ async fn boot_microvm(
         resolved_kernel.display(),
         kernel::KERNEL_BANNER
     );
-    println!("\n\x1b[1;32m─── MicroVM Guest Console [TTY0] ───────────────────────────────────────────────\x1b[0m");
+    println!("\n\x1b[1;32m─── MicroVM Runtime Telemetry ───────────────────────────────────────────────────\x1b[0m");
+    println!("  Host Platform:       {} ({})", host_os, host_arch);
+    println!("  Virtualization:      {}", hypervisor_backend);
+    println!("  Assigned vCPUs:      {}", vcpus);
+    println!("  Memory Footprint:    {} MB", memory_mb);
     println!(
-        "[    0.000000] Linux version {} (root@buildkit) (gcc 13.2.0) #1 SMP PREEMPT",
-        kernel::KERNEL_VERSION
-    );
-    println!("[    0.000000] Command line: {}", kernel::DEFAULT_BOOT_ARGS);
-    println!("[    0.000000] BIOS-provided physical RAM map:");
-    println!("[    0.000000]  BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable");
-    println!(
-        "[    0.000000]  BIOS-e820: [mem 0x0000000000100000-0x0000000200000000] usable ({} MB)",
-        memory_mb
-    );
-    println!(
-        "[    0.004120] smpboot: Allowing {} CPUs, 0 hotplug CPUs",
-        vcpus
-    );
-    println!(
-        "[    0.010450] setup_percpu: NR_CPUS:{} nr_cpumask_bits:{} nr_cpu_ids:{} nr_node_ids:1",
-        vcpus, vcpus, vcpus
-    );
-    println!("[    0.018230] virtio-mmio: registered 3 virtio-mmio devices");
-    println!(
-        "[    0.024100] virtio_blk virtio0: [vda] {} 512-byte logical blocks ({} MB)",
-        rootfs_size_mb * 2048,
+        "  Rootfs Device:       virtio-blk ({} MB ext4)",
         rootfs_size_mb
     );
     println!(
-        "[    0.029800] virtio_net virtio1 eth0: MAC {} (Host TAP: {}, IP: {}/24)",
-        guest_mac, tap_name, guest_ip
+        "  Network Interface:   eth0 ({}, TAP: {})",
+        guest_ip, tap_name
     );
-    println!("[    0.038100] VFS: Mounted root (ext4 filesystem) on device /dev/vda.");
-    println!("[    0.042300] Freeing unused kernel image (initmem) memory: 1024K");
-    println!("[    0.051000] Run /init as init process");
-    println!("\x1b[1;32m[llmman-init] PID 1 initialized in 48ms. MicroVM fully online.\x1b[0m");
+    println!("  Guest MAC:           {}", guest_mac);
+    println!("  Workload Target:     {}", model);
     println!("\x1b[1;32m────────────────────────────────────────────────────────────────────────────────\x1b[0m\n");
 
     println!("\x1b[1;32m✔ MicroVM Instance Successfully Running!\x1b[0m");
@@ -173,14 +163,7 @@ async fn boot_microvm(
         guest_ip, tap_name
     );
     println!("  \x1b[1mWORKLOAD:\x1b[0m     {}", model);
-    println!(
-        "  \x1b[1mSOURCE:\x1b[0m       {}",
-        if from_pool {
-            "Pre-warmed VmPool (<100ms)"
-        } else {
-            "Cold-booted Firecracker"
-        }
-    );
+    println!("  \x1b[1mBACKEND:\x1b[0m      {}", hypervisor_backend);
     println!("  \x1b[1mAPI SOCKET:\x1b[0m   {}", active_socket.display());
 
     if !detach {
@@ -249,33 +232,19 @@ fn list_microvms() {
 }
 
 async fn show_vm_pool() {
-    let temp_dir = tempfile::tempdir().unwrap_or_else(|_| panic!("tempdir"));
-    let pool = pool::VmPool::new(
-        3,
-        PathBuf::from("firecracker"),
-        temp_dir.path().to_path_buf(),
-    );
-    let _ = pool.warm().await;
-
-    let pool_len = pool.len().await;
     let target = 3;
-    let health = if pool_len > 0 { "HEALTHY" } else { "EMPTY" };
-    let health_color = if pool_len > 0 { "32" } else { "33" };
+    let has_firecracker = crate::find_on_path("firecracker").is_some();
+    let status_str = if has_firecracker {
+        "ACTIVE (KVM Ready)"
+    } else {
+        "STANDBY (Local Runtime)"
+    };
+    let status_color = if has_firecracker { "32" } else { "36" };
 
     println!("\x1b[1;35mPre-Warmed MicroVM Pool (VmPool Status):\x1b[0m");
     println!("  Target Capacity:     {} instances", target);
-    println!(
-        "  Warm Instances:      \x1b[1;{}m{} ready\x1b[0m",
-        health_color, pool_len
-    );
-    println!(
-        "  Replenishment:       {}",
-        if pool_len < target {
-            "Active (background async tokio worker)"
-        } else {
-            "Idle (pool at capacity)"
-        }
-    );
+    println!("  Warm Instances:      0 ready (demand-allocated)");
+    println!("  Replenishment:       Managed on-demand via lifecycle");
     println!(
         "  Kernel Image:        Linux {} ({})",
         kernel::KERNEL_VERSION,
@@ -283,7 +252,7 @@ async fn show_vm_pool() {
     );
     println!(
         "  State:               \x1b[1;{}m{}\x1b[0m",
-        health_color, health
+        status_color, status_str
     );
 }
 

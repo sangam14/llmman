@@ -36,27 +36,37 @@ defmodule DashboardWeb.ClusterLive do
 
   @impl true
   def handle_event("pause_vm", %{"uid" => uid}, socket) do
+    vm = Enum.find(socket.assigns.cluster_data["vms"], &(&1["uid"] == uid))
+    if vm && vm["pid"] do
+      System.cmd("kill", ["-STOP", "#{vm["pid"]}"])
+    end
+
     vms =
-      Enum.map(socket.assigns.cluster_data["vms"], fn vm ->
-        if vm["uid"] == uid, do: Map.put(vm, "status", "paused"), else: vm
+      Enum.map(socket.assigns.cluster_data["vms"], fn v ->
+        if v["uid"] == uid, do: Map.put(v, "status", "paused"), else: v
       end)
 
     updated_data = Map.put(socket.assigns.cluster_data, "vms", vms)
-    event = %{"time" => time_now(), "type" => "PAUSE", "msg" => "MicroVM #{uid} paused via Firecracker API"}
+    event = %{"time" => time_now(), "type" => "PAUSE", "msg" => "MicroVM #{uid} process paused (SIGSTOP)"}
     updated_data = update_in(updated_data, ["events"], &[event | &1])
 
-    {:noreply, socket |> assign(:cluster_data, updated_data) |> assign(:notification, "MicroVM #{uid} state paused.")}
+    {:noreply, socket |> assign(:cluster_data, updated_data) |> assign(:notification, "MicroVM #{uid} paused.")}
   end
 
   @impl true
   def handle_event("resume_vm", %{"uid" => uid}, socket) do
+    vm = Enum.find(socket.assigns.cluster_data["vms"], &(&1["uid"] == uid))
+    if vm && vm["pid"] do
+      System.cmd("kill", ["-CONT", "#{vm["pid"]}"])
+    end
+
     vms =
-      Enum.map(socket.assigns.cluster_data["vms"], fn vm ->
-        if vm["uid"] == uid, do: Map.put(vm, "status", "running"), else: vm
+      Enum.map(socket.assigns.cluster_data["vms"], fn v ->
+        if v["uid"] == uid, do: Map.put(v, "status", "running"), else: v
       end)
 
     updated_data = Map.put(socket.assigns.cluster_data, "vms", vms)
-    event = %{"time" => time_now(), "type" => "RESUME", "msg" => "MicroVM #{uid} resumed via Firecracker API"}
+    event = %{"time" => time_now(), "type" => "RESUME", "msg" => "MicroVM #{uid} process resumed (SIGCONT)"}
     updated_data = update_in(updated_data, ["events"], &[event | &1])
 
     {:noreply, socket |> assign(:cluster_data, updated_data) |> assign(:notification, "MicroVM #{uid} resumed.")}
@@ -81,9 +91,24 @@ defmodule DashboardWeb.ClusterLive do
 
   @impl true
   def handle_event("terminate_vm", %{"uid" => uid}, socket) do
+    vm = Enum.find(socket.assigns.cluster_data["vms"], &(&1["uid"] == uid))
+    if vm && vm["pid"] do
+      System.cmd("kill", ["-15", "#{vm["pid"]}"])
+      # Remove disk record
+      dirs = [
+        Path.expand("~/Library/Application Support/llmman/vms"),
+        Path.expand("~/.local/share/llmman/vms"),
+        "/tmp/llmman/vms"
+      ]
+      for dir <- dirs do
+        file = Path.join(dir, "#{uid}.json")
+        if File.exists?(file), do: File.rm(file)
+      end
+    end
+
     vms = Enum.reject(socket.assigns.cluster_data["vms"], &(&1["uid"] == uid))
     updated_data = Map.put(socket.assigns.cluster_data, "vms", vms)
-    event = %{"time" => time_now(), "type" => "STOP", "msg" => "MicroVM #{uid} terminated and cni tap released"}
+    event = %{"time" => time_now(), "type" => "STOP", "msg" => "MicroVM #{uid} terminated (SIGTERM) and disk record removed"}
     updated_data = update_in(updated_data, ["events"], &[event | &1])
 
     {:noreply, socket |> assign(:cluster_data, updated_data) |> assign(:notification, "MicroVM #{uid} terminated.")}

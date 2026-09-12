@@ -272,7 +272,7 @@ pub fn start_bridge(
                                             let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: close\r\n\r\n{\"data\":[],\"object\":\"list\"}";
                                             let _ = client_stream.write_all(resp).await;
                                         } else {
-                                            let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"response\":\"ok\"}";
+                                            let resp = b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: 67\r\nConnection: close\r\n\r\n{\"error\":\"Inference backend inside MicroVM is not yet reachable\"}";
                                             let _ = client_stream.write_all(resp).await;
                                         }
                                         let _ = client_stream.flush().await;
