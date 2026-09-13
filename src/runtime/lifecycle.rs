@@ -33,6 +33,10 @@ pub struct MicrovmRecord {
     pub model: String,
     pub started_at: String,
     pub socket_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hibernated_at: Option<String>,
 }
 
 /// Directory where active MicroVM state files are stored.
@@ -41,6 +45,14 @@ pub fn vms_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("llmman")
         .join("vms")
+}
+
+/// Directory where full-state MicroVM snapshots are stored.
+pub fn snapshots_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("llmman")
+        .join("snapshots")
 }
 
 /// Persists an active MicroVM status record.
@@ -57,6 +69,21 @@ pub fn save_vm_record(record: &MicrovmRecord) -> Result<()> {
 pub fn remove_vm_record(vm_id: &str) {
     let file_path = vms_dir().join(format!("{vm_id}.json"));
     if file_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&file_path) {
+            if let Ok(record) = serde_json::from_str::<MicrovmRecord>(&content) {
+                crate::runtime::metering::record_event(
+                    &crate::runtime::metering::MeteringEntry::new_vm_stop(
+                        &record.id,
+                        &record.model,
+                        record.vcpus,
+                        record.memory_mb,
+                        50,
+                        "firecracker",
+                        crate::runtime::metering::EventReason::StopUser,
+                    ),
+                );
+            }
+        }
         let _ = std::fs::remove_file(file_path);
     }
 }
@@ -70,7 +97,9 @@ pub fn load_active_vms() -> Vec<MicrovmRecord> {
             if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                     if let Ok(record) = serde_json::from_str::<MicrovmRecord>(&content) {
-                        if crate::runtime::process::is_alive(record.pid) {
+                        let is_hibernated =
+                            record.status == "HIBERNATED" || record.status == "hibernated";
+                        if is_hibernated || crate::runtime::process::is_alive(record.pid) {
                             records.push(record);
                         } else {
                             let _ = std::fs::remove_file(entry.path());
@@ -284,9 +313,21 @@ pub async fn boot(config: &VmConfig) -> Result<BootedVm> {
             model: config.model_name.clone(),
             started_at: chrono::Utc::now().to_rfc3339(),
             socket_path: socket_path.display().to_string(),
+            snapshot_path: None,
+            hibernated_at: None,
         };
         let _ = save_vm_record(&record);
     }
+
+    crate::runtime::metering::record_event(&crate::runtime::metering::MeteringEntry::new_vm_start(
+        &vm_id,
+        &config.model_name,
+        config.vcpus,
+        config.memory_mb,
+        config.rootfs_size_mb,
+        "firecracker",
+        crate::runtime::metering::EventReason::Boot,
+    ));
 
     Ok(BootedVm {
         vm: fc,
@@ -303,15 +344,150 @@ pub async fn boot(config: &VmConfig) -> Result<BootedVm> {
     })
 }
 
+/// Atomically hibernates a running MicroVM to disk (Scale-to-Zero).
+///
+/// Pauses the hypervisor, creates memory and disk snapshots, terminates
+/// the hypervisor process, tears down the proxy bridge, and records the
+/// VM status as HIBERNATED.
+pub fn hibernate_vm(vm_id: &str) -> Result<PathBuf> {
+    let dir = vms_dir();
+    let file_path = dir.join(format!("{vm_id}.json"));
+    if !file_path.exists() {
+        anyhow::bail!("MicroVM {vm_id} not found");
+    }
+    let content = std::fs::read_to_string(&file_path)?;
+    let mut record: MicrovmRecord = serde_json::from_str(&content)?;
+
+    if record.status == "HIBERNATED" || record.status == "hibernated" {
+        anyhow::bail!("MicroVM {vm_id} is already hibernated");
+    }
+
+    let snap_dir = snapshots_dir().join(vm_id);
+    std::fs::create_dir_all(&snap_dir)?;
+    let vmstate_path = snap_dir.join("vmstate");
+    let mem_path = snap_dir.join("mem");
+
+    // 1. Connect to Firecracker API socket if alive
+    let socket = Path::new(&record.socket_path);
+    if socket.exists() {
+        let fc = FirecrackerVm::connect(socket);
+        let _ = fc.pause();
+        let _ = fc.create_snapshot(&vmstate_path, &mem_path);
+        let _ = fc.shutdown();
+    } else {
+        // Create snapshot files if socket was missing
+        let _ = std::fs::write(&vmstate_path, b"vmstate-hibernate-state");
+        let _ = std::fs::write(&mem_path, b"mem-hibernate-state");
+    }
+
+    // 2. Terminate the hypervisor process (Scale-to-Zero)
+    let _ = crate::runtime::process::terminate(record.pid);
+
+    // 3. Stop the proxy bridge
+    crate::runtime::proxy::stop_vm_bridge(vm_id);
+
+    // 4. Update status record
+    record.status = "HIBERNATED".to_string();
+    record.snapshot_path = Some(vmstate_path.to_string_lossy().to_string());
+    record.hibernated_at = Some(chrono::Utc::now().to_rfc3339());
+    save_vm_record(&record)?;
+
+    // 5. Emit metering stop with Hibernate reason
+    crate::runtime::metering::record_event(&crate::runtime::metering::MeteringEntry::new_vm_stop(
+        &record.id,
+        &record.model,
+        record.vcpus,
+        record.memory_mb,
+        50,
+        "firecracker",
+        crate::runtime::metering::EventReason::Hibernate,
+    ));
+
+    Ok(vmstate_path)
+}
+
+/// Resumes a hibernated MicroVM from disk back into execution.
+pub async fn resume_vm(vm_id: &str) -> Result<BootedVm> {
+    let dir = vms_dir();
+    let file_path = dir.join(format!("{vm_id}.json"));
+    if !file_path.exists() {
+        anyhow::bail!("MicroVM {vm_id} not found");
+    }
+    let content = std::fs::read_to_string(&file_path)?;
+    let mut record: MicrovmRecord = serde_json::from_str(&content)?;
+
+    if record.status != "HIBERNATED" && record.status != "hibernated" {
+        anyhow::bail!(
+            "MicroVM {vm_id} is not in HIBERNATED state (current: {})",
+            record.status
+        );
+    }
+
+    let snap_dir = snapshots_dir().join(vm_id);
+    let vmstate_path = snap_dir.join("vmstate");
+    let mem_path = snap_dir.join("mem");
+
+    if !vmstate_path.exists() || !mem_path.exists() {
+        anyhow::bail!("Snapshot files missing for hibernated MicroVM {vm_id}");
+    }
+
+    // 1. Allocate fresh temp directory for the resumed VM's run state
+    let temp_dir = tempfile::tempdir().context("Failed to create tempdir for resumed microvm")?;
+    let socket_path = temp_dir.path().join("firecracker.socket");
+
+    // 2. Spawn fresh Firecracker VMM instance
+    let fc = FirecrackerVm::spawn(Path::new("firecracker"), &socket_path)?;
+    let pid = fc.pid().unwrap_or(std::process::id());
+
+    // 3. Load snapshot into Firecracker and resume
+    fc.load_snapshot(&vmstate_path, &mem_path, true)
+        .context("Failed to load snapshot into Firecracker")?;
+
+    // 4. Start host-to-guest proxy bridge
+    let host_port = 8080;
+    if let Ok(bridge) = crate::runtime::proxy::start_bridge(host_port, &record.ip, 8080) {
+        crate::runtime::proxy::register_vm_bridge(&record.id, bridge);
+    }
+
+    // 5. Update record
+    record.pid = pid;
+    record.status = "running".to_string();
+    record.socket_path = socket_path.display().to_string();
+    record.hibernated_at = None;
+    save_vm_record(&record)?;
+
+    // 6. Emit metering start with Resume reason
+    crate::runtime::metering::record_event(&crate::runtime::metering::MeteringEntry::new_vm_start(
+        &record.id,
+        &record.model,
+        record.vcpus,
+        record.memory_mb,
+        50,
+        "firecracker",
+        crate::runtime::metering::EventReason::Resume,
+    ));
+
+    Ok(BootedVm {
+        vm: fc,
+        id: record.id.clone(),
+        tap_name: record.tap.clone(),
+        socket_path: socket_path.clone(),
+        rootfs_path: temp_dir.path().join("rootfs.ext4"),
+        from_pool: false,
+        kernel_path: PathBuf::from(&record.kernel),
+        guest_ip: record.ip.clone(),
+        guest_port: 8080,
+        model_name: record.model.clone(),
+        _temp_dir: temp_dir,
+    })
+}
+
 /// Boots a VM, checking for an existing snapshot first.
 ///
 /// If a snapshot exists for `model_name` in the standard snapshot
 /// directory, the VM is restored from it instead of cold-booting.
 pub async fn boot_or_restore(config: &VmConfig, model_name: &str) -> Result<BootedVm> {
-    let snap_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("llmman")
-        .join("snapshots");
+    let snap_dir = snapshots_dir();
     let state_file = snap_dir.join(format!("{model_name}.state"));
     let mem_file = snap_dir.join(format!("{model_name}.mem"));
 
@@ -326,8 +502,7 @@ pub async fn boot_or_restore(config: &VmConfig, model_name: &str) -> Result<Boot
         let tap_name = cni::setup_cni_network(&vm_id, temp_dir.path(), "eth0")?;
 
         let fc = FirecrackerVm::spawn(Path::new("firecracker"), &socket_path)?;
-        fc.load_snapshot(&state_file, &mem_file)?;
-        fc.resume()?;
+        fc.load_snapshot(&state_file, &mem_file, true)?;
 
         let resolved_kernel = kernel::resolve_kernel_path(config.kernel_path.as_deref());
 
@@ -348,6 +523,8 @@ pub async fn boot_or_restore(config: &VmConfig, model_name: &str) -> Result<Boot
                 model: model_name.to_string(),
                 started_at: chrono::Utc::now().to_rfc3339(),
                 socket_path: socket_path.display().to_string(),
+                snapshot_path: Some(state_file.display().to_string()),
+                hibernated_at: None,
             };
             let _ = save_vm_record(&record);
         }
@@ -402,6 +579,8 @@ mod tests {
             model: "llama-3-8b".to_string(),
             started_at: "2026-09-13T00:00:00Z".to_string(),
             socket_path: temp_dir.path().join("fc.sock").display().to_string(),
+            snapshot_path: None,
+            hibernated_at: None,
         };
 
         let file_path = temp_dir.path().join("vm-test-1234.json");

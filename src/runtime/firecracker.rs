@@ -145,41 +145,8 @@ impl FirecrackerVm {
     }
 
     // -----------------------------------------------------------------------
-    // VM state management
+    // VM configuration
     // -----------------------------------------------------------------------
-
-    pub fn pause(&self) -> Result<()> {
-        let body = serde_json::json!({"state": "Paused"}).to_string();
-        self.patch("/vm", &body)
-    }
-
-    pub fn resume(&self) -> Result<()> {
-        let body = serde_json::json!({"state": "Resumed"}).to_string();
-        self.patch("/vm", &body)
-    }
-
-    pub fn create_snapshot(&self, snapshot_path: &Path, mem_file_path: &Path) -> Result<()> {
-        let body = serde_json::json!({
-            "snapshot_type": "Full",
-            "snapshot_path": snapshot_path.display().to_string(),
-            "mem_file_path": mem_file_path.display().to_string(),
-        })
-        .to_string();
-        self.put("/snapshot/create", &body)
-    }
-
-    pub fn load_snapshot(&self, snapshot_path: &Path, mem_file_path: &Path) -> Result<()> {
-        let body = serde_json::json!({
-            "snapshot_path": snapshot_path.display().to_string(),
-            "mem_backend": {
-                "backend_type": "File",
-                "backend_path": mem_file_path.display().to_string(),
-            },
-            "resume_vm": false,
-        })
-        .to_string();
-        self.put("/snapshot/load", &body)
-    }
 
     pub fn set_boot_source(&self, kernel_path: &Path, cmdline: &str) -> Result<()> {
         let body = serde_json::json!({
@@ -273,6 +240,61 @@ impl FirecrackerVm {
         self.put("/actions", &body)
     }
 
+    /// Pauses the running MicroVM CPU execution.
+    pub fn pause(&self) -> Result<()> {
+        let body = serde_json::json!({"state": "Paused"}).to_string();
+        self.patch("/vm", &body)
+    }
+
+    /// Resumes a paused MicroVM CPU execution.
+    pub fn resume(&self) -> Result<()> {
+        let body = serde_json::json!({"state": "Resumed"}).to_string();
+        self.patch("/vm", &body)
+    }
+
+    /// Captures full-state snapshot (vmstate and memory file).
+    pub fn create_snapshot(&self, snapshot_path: &Path, mem_file_path: &Path) -> Result<()> {
+        if let Some(parent) = snapshot_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = mem_file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let body = serde_json::json!({
+            "snapshot_type": "Full",
+            "snapshot_path": snapshot_path.to_string_lossy(),
+            "mem_file_path": mem_file_path.to_string_lossy(),
+        })
+        .to_string();
+        self.put("/snapshot/create", &body)
+    }
+
+    /// Loads a full-state snapshot into a fresh or stopped Firecracker instance.
+    pub fn load_snapshot(
+        &self,
+        snapshot_path: &Path,
+        mem_file_path: &Path,
+        resume_vm: bool,
+    ) -> Result<()> {
+        let body = serde_json::json!({
+            "snapshot_path": snapshot_path.to_string_lossy(),
+            "mem_file_path": mem_file_path.to_string_lossy(),
+            "enable_diff_snapshots": false,
+            "resume_vm": resume_vm,
+        })
+        .to_string();
+        self.put("/snapshot/load", &body)
+    }
+
+    /// Sends a shutdown request to the MicroVM hypervisor.
+    pub fn shutdown(&self) -> Result<()> {
+        let _ = self.put("/shutdown", "{}");
+        if let Some(pid) = self.pid() {
+            let _ = crate::runtime::process::terminate(pid);
+        }
+        Ok(())
+    }
+
     /// Consumes the FirecrackerVm and returns the underlying tokio Child process.
     pub fn into_inner(mut self) -> Option<Child> {
         self.process.take()
@@ -318,6 +340,24 @@ pub fn run_internal_daemon(socket_path: &Path) -> Result<()> {
                             let _ = s.write_all(resp.as_bytes());
                             let _ = s.shutdown(std::net::Shutdown::Both);
                             break;
+                        }
+                        if req.contains("/snapshot/create") {
+                            if let Some(body_start) = req.find("\r\n\r\n") {
+                                let body = &req[body_start + 4..];
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+                                    if let Some(snap) =
+                                        val.get("snapshot_path").and_then(|s| s.as_str())
+                                    {
+                                        let _ =
+                                            std::fs::write(snap, b"vmstate-snapshot-header-magic");
+                                    }
+                                    if let Some(mem) =
+                                        val.get("mem_file_path").and_then(|s| s.as_str())
+                                    {
+                                        let _ = std::fs::write(mem, b"mem-snapshot-bytes");
+                                    }
+                                }
+                            }
                         }
                         let resp = if req.starts_with("GET /vm") {
                             "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{\"state\": \"Running\"}"
@@ -371,7 +411,18 @@ mod tests {
         assert!(vm.set_balloon(1024, true).is_ok());
         assert!(vm.adjust_balloon(2048).is_ok());
 
-        let _ = vm.put("/shutdown", "{}");
+        assert!(vm.pause().is_ok());
+        assert!(vm.resume().is_ok());
+
+        let snap_file = temp_dir.path().join("vmstate");
+        let mem_file = temp_dir.path().join("mem");
+        assert!(vm.create_snapshot(&snap_file, &mem_file).is_ok());
+        assert!(snap_file.exists());
+        assert!(mem_file.exists());
+
+        assert!(vm.load_snapshot(&snap_file, &mem_file, true).is_ok());
+
+        let _ = vm.shutdown();
         let _ = handle.join();
     }
 }

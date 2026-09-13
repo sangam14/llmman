@@ -60,7 +60,7 @@ impl SnapshotCommand {
                 let vm = crate::runtime::firecracker::FirecrackerVm::connect(socket);
 
                 if socket.exists() {
-                    vm.load_snapshot(state_path, mem_path)?;
+                    vm.load_snapshot(state_path, mem_path, false)?;
                     vm.resume()?;
                 }
 
