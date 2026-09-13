@@ -17,4 +17,8 @@ config :dashboard, DashboardWeb.Endpoint,
 # Configure Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# Configure asset compilers
+config :esbuild, :version, "0.25.0"
+config :tailwind, :version, "4.3.0"
+
 import_config "#{config_env()}.exs"

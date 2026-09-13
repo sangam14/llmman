@@ -18,7 +18,7 @@ MIX   ?= mix
 .PHONY: help all build release build-all build-init build-bench \
         test test-lib test-bin test-dashboard test-all \
         check lint clippy fmt fmt-check ci \
-        dashboard-setup dashboard-dev dashboard-server dashboard-fmt \
+        dashboard-setup dashboard-dev dashboard-server dashboard-stop dashboard-fmt \
         vm-ps vm-metering vm-gc clean clean-all
 
 # ------------------------------------------------------------------------------
@@ -109,7 +109,13 @@ dashboard-setup: ## Fetch and install Phoenix dashboard dependencies
 dashboard-server: dashboard-dev ## Alias for dashboard-dev
 dashboard-dev: ## Start Phoenix LiveView telemetry dashboard locally (port 4040)
 	@echo -e "$(CYAN)--> Starting Phoenix Dashboard on http://localhost:4040...$(RESET)"
+	@lsof -ti:4040 | xargs kill -9 2>/dev/null || true
 	@cd dashboard && $(MIX) phx.server
+
+dashboard-stop: ## Stop any running Phoenix Dashboard instance on port 4040
+	@echo -e "$(YELLOW)--> Stopping dashboard on port 4040...$(RESET)"
+	@lsof -ti:4040 | xargs kill -9 2>/dev/null || true
+	@echo -e "$(GREEN)✔ Dashboard stopped.$(RESET)"
 
 dashboard-fmt: ## Format Elixir dashboard codebase
 	@echo -e "$(CYAN)--> Formatting dashboard code...$(RESET)"
