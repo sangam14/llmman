@@ -21,10 +21,21 @@ defmodule Dashboard.ClusterClient do
               end)
           end
 
-        total_vcpus = Enum.reduce(body["hosts"] || [], 0, fn h, acc -> acc + (h["vcpus"] || 0) end)
-        used_vcpus = Enum.reduce(merged_vms, 0, fn vm, acc -> acc + (if vm["status"] == "running", do: vm["vcpus"] || 0, else: 0) end)
-        total_mem = Enum.reduce(body["hosts"] || [], 0, fn h, acc -> acc + (h["memory_mb"] || 0) end)
-        used_mem = Enum.reduce(merged_vms, 0, fn vm, acc -> acc + (if vm["status"] == "running", do: vm["memory_mb"] || 0, else: 0) end)
+        total_vcpus =
+          Enum.reduce(body["hosts"] || [], 0, fn h, acc -> acc + (h["vcpus"] || 0) end)
+
+        used_vcpus =
+          Enum.reduce(merged_vms, 0, fn vm, acc ->
+            acc + if vm["status"] == "running", do: vm["vcpus"] || 0, else: 0
+          end)
+
+        total_mem =
+          Enum.reduce(body["hosts"] || [], 0, fn h, acc -> acc + (h["memory_mb"] || 0) end)
+
+        used_mem =
+          Enum.reduce(merged_vms, 0, fn vm, acc ->
+            acc + if vm["status"] == "running", do: vm["memory_mb"] || 0, else: 0
+          end)
 
         data =
           body
@@ -51,12 +62,12 @@ defmodule Dashboard.ClusterClient do
 
     used_vcpus =
       Enum.reduce(local_vms, 0, fn vm, acc ->
-        acc + (if vm["status"] == "running", do: vm["vcpus"] || 0, else: 0)
+        acc + if vm["status"] == "running", do: vm["vcpus"] || 0, else: 0
       end)
 
     used_mem_mb =
       Enum.reduce(local_vms, 0, fn vm, acc ->
-        acc + (if vm["status"] == "running", do: vm["memory_mb"] || 0, else: 0)
+        acc + if vm["status"] == "running", do: vm["memory_mb"] || 0, else: 0
       end)
 
     host = %{
@@ -85,7 +96,8 @@ defmodule Dashboard.ClusterClient do
       %{
         "time" => time_now(),
         "type" => "SYSTEM",
-        "msg" => "Host #{hostname} online (#{total_vcpus} vCPUs, #{round(total_mem_mb / 1024)} GB RAM, #{arch})"
+        "msg" =>
+          "Host #{hostname} online (#{total_vcpus} vCPUs, #{round(total_mem_mb / 1024)} GB RAM, #{arch})"
       }
       | Enum.map(local_vms, fn vm ->
           %{
@@ -133,6 +145,7 @@ defmodule Dashboard.ClusterClient do
         |> Enum.filter(&String.ends_with?(&1, ".json"))
         |> Enum.map(fn file ->
           path = Path.join(dir, file)
+
           with {:ok, content} <- File.read(path),
                {:ok, data} <- Jason.decode(content) do
             pid = data["pid"]
@@ -147,7 +160,7 @@ defmodule Dashboard.ClusterClient do
                 "vcpus" => data["vcpus"] || 4,
                 "memory_mb" => data["memory_mb"] || 8192,
                 "status" => String.downcase(data["status"] || "running"),
-                "kernel" => data["kernel"] || "6.18.45-agentkernel",
+                "kernel" => data["kernel"] || "6.18.45-llmman",
                 "ip" => data["ip"] || "172.16.0.2",
                 "tap" => data["tap"] || "vmtap-0",
                 "socket_path" => data["socket_path"]
@@ -172,6 +185,7 @@ defmodule Dashboard.ClusterClient do
   rescue
     _ -> true
   end
+
   defp is_pid_alive?(_), do: true
 
   defp detect_hostname do
@@ -190,6 +204,7 @@ defmodule Dashboard.ClusterClient do
           {bytes, ""} -> div(bytes, 1024 * 1024)
           _ -> 16384
         end
+
       _ ->
         16384
     end
@@ -202,6 +217,7 @@ defmodule Dashboard.ClusterClient do
       {:ok, ifaddrs} ->
         Enum.find_value(ifaddrs, "127.0.0.1", fn {_name, opts} ->
           flags = Keyword.get(opts, :flags, [])
+
           if :up in flags and :loopback not in flags do
             addrs =
               Keyword.get_values(opts, :addr)
@@ -215,6 +231,7 @@ defmodule Dashboard.ClusterClient do
             nil
           end
         end)
+
       _ ->
         "127.0.0.1"
     end
@@ -347,7 +364,7 @@ defmodule Dashboard.ClusterClient do
           "vcpus" => 4,
           "memory_mb" => 8192,
           "status" => "running",
-          "kernel" => "6.18.45-agentkernel",
+          "kernel" => "6.18.45-llmman",
           "ip" => "172.16.0.2",
           "tap" => "vmtap-0"
         },
@@ -359,7 +376,7 @@ defmodule Dashboard.ClusterClient do
           "vcpus" => 4,
           "memory_mb" => 8192,
           "status" => "running",
-          "kernel" => "6.18.45-agentkernel",
+          "kernel" => "6.18.45-llmman",
           "ip" => "172.16.0.3",
           "tap" => "vmtap-1"
         },
@@ -371,7 +388,7 @@ defmodule Dashboard.ClusterClient do
           "vcpus" => 2,
           "memory_mb" => 4096,
           "status" => "paused",
-          "kernel" => "6.18.45-agentkernel",
+          "kernel" => "6.18.45-llmman",
           "ip" => "172.16.0.4",
           "tap" => "vmtap-2"
         }
@@ -401,10 +418,26 @@ defmodule Dashboard.ClusterClient do
         "rate_limit_status" => "Healthy (0 throttle events)"
       },
       "events" => [
-        %{"time" => "22:48:59", "type" => "BOOT", "msg" => "MicroVM vm-0000ea14 booted in 51ms (kernel: 6.18.45-agentkernel)"},
-        %{"time" => "22:47:24", "type" => "BOOT", "msg" => "MicroVM vm-0000e683 booted in 53ms (vllm-deepseek-coder)"},
-        %{"time" => "22:45:12", "type" => "POOL", "msg" => "VmPool replenished to 3 warm instances (<100ms SLA)"},
-        %{"time" => "22:30:00", "type" => "SNAPSHOT", "msg" => "Full-state memory snapshot saved (8.2 GB)"}
+        %{
+          "time" => "22:48:59",
+          "type" => "BOOT",
+          "msg" => "MicroVM vm-0000ea14 booted in 51ms (kernel: 6.18.45-llmman)"
+        },
+        %{
+          "time" => "22:47:24",
+          "type" => "BOOT",
+          "msg" => "MicroVM vm-0000e683 booted in 53ms (vllm-deepseek-coder)"
+        },
+        %{
+          "time" => "22:45:12",
+          "type" => "POOL",
+          "msg" => "VmPool replenished to 3 warm instances (<100ms SLA)"
+        },
+        %{
+          "time" => "22:30:00",
+          "type" => "SNAPSHOT",
+          "msg" => "Full-state memory snapshot saved (8.2 GB)"
+        }
       ]
     }
   end

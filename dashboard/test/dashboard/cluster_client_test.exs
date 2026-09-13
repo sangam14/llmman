@@ -164,7 +164,7 @@ defmodule Dashboard.ClusterClientTest do
       "id" => "vm-test-001",
       "pid" => System.pid() |> String.to_integer(),
       "status" => "RUNNING",
-      "kernel" => "6.18.45-agentkernel",
+      "kernel" => "6.18.45-llmman",
       "vcpus" => 2,
       "memory_mb" => 4096,
       "ip" => "172.16.0.99",

@@ -66,6 +66,8 @@ test: ## Run Rust unit test suite
 	@echo -e "$(CYAN)--> Running Rust test suite...$(RESET)"
 	$(CARGO) test --lib
 
+test-lib: test ## Alias for test
+
 test-all: test test-dashboard ## Run both Rust test suite and Phoenix dashboard tests
 	@echo -e "$(GREEN)✔ All test suites passed successfully!$(RESET)"
 

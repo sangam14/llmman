@@ -4,6 +4,7 @@
 import * as chat from "./chat.js";
 import * as shell from "./shell.js";
 import * as models from "./models.js";
+import * as dashboard from "./dashboard.js";
 import * as db from "./db.js";
 import * as api from "./api.js";
 import * as settings from "./settings.js";
@@ -19,6 +20,7 @@ async function boot() {
 
   chat.init();
   shell.init();
+  dashboard.init();
   models.initPicker();
   models.initPullDialog();
   models.initModelsDialog();
@@ -68,6 +70,10 @@ async function route() {
     setMode("shell");
     return;
   }
+  if (hash === "/dashboard") {
+    setMode("dashboard");
+    return;
+  }
   setMode("chat");
   if (hash === "/new") {
     chat.newConversation();
@@ -99,9 +105,17 @@ function setMode(next) {
   $("#app").classList.toggle("mode-shell", next === "shell");
   $("#view-chat").classList.toggle("hidden", next !== "chat");
   $("#view-shell").classList.toggle("hidden", next !== "shell");
-  if (next === "shell") shell.show().catch((e) => toast(`Shell: ${e.message}`, "error"));
-  else shell.hide();
-  document.title = next === "shell" ? "Shell · llmman" : "llmman";
+  $("#view-dashboard").classList.toggle("hidden", next !== "dashboard");
+  if (next === "dashboard") {
+    dashboard.show();
+    document.title = "Dashboard · llmman";
+  } else if (next === "shell") {
+    shell.show().catch((e) => toast(`Shell: ${e.message}`, "error"));
+    document.title = "Shell · llmman";
+  } else {
+    shell.hide();
+    document.title = "llmman";
+  }
 }
 
 // ---- Frame ------------------------------------------------------------
@@ -116,6 +130,9 @@ function initFrame() {
       return;
     }
     location.hash = "#/shell";
+  });
+  $("#mode-dashboard")?.addEventListener("click", () => {
+    location.hash = "#/dashboard";
   });
   $("#new-chat").addEventListener("click", () => {
     if (mode !== "chat") location.hash = "#/new";

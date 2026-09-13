@@ -34,6 +34,7 @@
     <div class="mode-toggle" role="tablist" aria-label="Mode">
       <button role="tab" data-mode="chat" class="active" id="mode-chat" aria-selected="true" aria-controls="view-chat">Chat</button>
       <button role="tab" data-mode="shell" id="mode-shell" aria-selected="false" aria-controls="view-shell">Shell</button>
+      <button role="tab" data-mode="dashboard" id="mode-dashboard" aria-selected="false" aria-controls="view-dashboard">Dashboard</button>
     </div>
 
     <button class="new-chat" id="new-chat">
@@ -44,6 +45,9 @@
     <nav class="sidebar-nav">
       <a class="nav-item" href="#/" data-nav="chat">
         <svg viewBox="0 0 24 24"><use href="#i-chat"/></svg><span>Chats</span>
+      </a>
+      <a class="nav-item" href="#/dashboard" data-nav="dashboard">
+        <svg viewBox="0 0 24 24"><use href="#i-panel"/></svg><span>Dashboard</span>
       </a>
       <button class="nav-item" id="nav-models" type="button">
         <svg viewBox="0 0 24 24"><use href="#i-cube"/></svg><span>Models</span>
@@ -197,6 +201,49 @@
           <svg viewBox="0 0 24 24" class="shell-overlay-icon"><use href="#i-terminal"/></svg>
           <div class="shell-overlay-text" id="shell-overlay-text"></div>
           <button class="btn primary" id="shell-restart">Open a new shell</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Dashboard -->
+    <section class="view view-dashboard hidden" id="view-dashboard" role="tabpanel">
+      <div class="db-container">
+        <!-- Top Metrics Ribbon -->
+        <div class="db-ribbon">
+          <div class="db-metric"><span class="db-badge-run">⚡</span><span class="db-val" id="db-running-count">2</span><span class="muted">running</span></div>
+          <div class="db-metric"><span class="db-badge-stop">⏹</span><span class="db-val" id="db-stopped-count">6</span><span class="muted">stopped</span></div>
+          <div class="db-metric"><span class="muted">⬡</span><span class="db-val" id="db-total-count">8</span><span class="muted">total</span></div>
+          <span class="db-divider">|</span>
+          <div class="db-metric"><span class="db-icon-cpu">⚙</span><span class="db-val" id="db-vcpus">14</span><span class="muted">vCPUs</span></div>
+          <div class="db-metric"><span class="db-icon-ram">💾</span><span class="db-val" id="db-mem">36.0 GB</span><span class="muted">memory</span></div>
+          <span class="db-divider">|</span>
+          <div class="db-metric"><span class="db-icon-obj">📦</span><span class="db-val">2</span><span class="muted">objects</span></div>
+          <div class="db-metric"><span class="db-icon-sched">⏱</span><span class="db-val">1</span><span class="muted">schedules (1 active)</span></div>
+          <div class="db-metric"><span class="db-icon-store">🗄</span><span class="db-val">5</span><span class="muted">stores</span></div>
+        </div>
+
+        <!-- Two Column Main Body -->
+        <div class="db-body">
+          <!-- Left: Recent Sandboxes -->
+          <div class="db-col db-col-sandboxes">
+            <div class="db-col-head">
+              <h2>Recent Sandboxes</h2>
+              <a href="http://localhost:4040" target="_blank" class="db-view-all">LiveView Fleet :4040 ↗</a>
+            </div>
+            <div class="db-card-list" id="db-sandboxes-list"></div>
+          </div>
+
+          <!-- Right: Quickstart -->
+          <div class="db-col db-col-quickstart">
+            <div class="db-col-head">
+              <h2>Quickstart</h2>
+            </div>
+            <div class="db-action-row">
+              <button class="db-btn-create" id="db-btn-create"><span>+</span> Create Sandbox</button>
+              <button class="db-btn-quick" id="db-btn-quick"><span>▷</span> Quick Run</button>
+            </div>
+            <div class="db-preset-list" id="db-preset-list"></div>
+          </div>
         </div>
       </div>
     </section>

@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <title>LLMMAN | Firecracker MicroVM & Brigade Fleet Dashboard</title>
-    <!-- Google Fonts Inter -->
+    <title>llmman — MicroVM Sandboxes & Fleet Dashboard</title>
+    <!-- Google Fonts Inter & JetBrains Mono -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -17,16 +17,21 @@
         theme: {
           extend: {
             fontFamily: {
-              sans: ['Inter', 'sans-serif'],
-              mono: ['JetBrains Mono', 'monospace'],
+              sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+              mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
             },
             colors: {
-              brand: {
-                50: '#ecfdf5',
-                100: '#d1fae5',
-                400: '#34d399',
-                500: '#10b981',
-                600: '#059669',
+              llmman: {
+                black: '#000000',
+                dark: '#0b0e14',
+                sidebar: '#0c0d11',
+                card: '#0e0f14',
+                cardHover: '#13151b',
+                border: '#1c1e25',
+                borderLight: '#262933',
+                accent: '#7aa2f7',
+                teal: '#6ee7c7',
+                textMuted: '#9ca3af',
               }
             }
           }
@@ -49,21 +54,28 @@
     <style>
       body {
         font-family: 'Inter', sans-serif;
-        background-color: #030712;
+        background-color: #000000;
         color: #f3f4f6;
+        overflow-x: hidden;
       }
-      .phx-connected { transition: all 0.2s ease-in; }
-      .glass-card {
-        background: rgba(17, 24, 39, 0.7);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(31, 41, 55, 0.8);
+      /* Custom sleek dark scrollbar */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
       }
-      .glass-card:hover {
-        border-color: rgba(75, 85, 99, 0.8);
+      ::-webkit-scrollbar-track {
+        background: #000000;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #22242c;
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #374151;
       }
     </style>
   </head>
-  <body class="bg-gray-950 text-gray-100 min-h-screen antialiased selection:bg-emerald-500 selection:text-white">
+  <body class="bg-black text-gray-100 min-h-screen antialiased selection:bg-emerald-500 selection:text-white">
     <%= @inner_content %>
   </body>
 </html>
